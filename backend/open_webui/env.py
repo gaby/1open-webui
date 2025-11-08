@@ -619,14 +619,14 @@ AIOHTTP_SSL_CA = os.environ.get("AIOHTTP_SSL_CA") or os.environ.get("AIOHTTP_CA"
 
 if AIOHTTP_CLIENT_SESSION_SSL_ENABLED and any([AIOHTTP_SSL_CERT, AIOHTTP_SSL_KEY, AIOHTTP_SSL_CA]):
     try:
-        ssl_context = ssl.create_default_context(cafile=AIOHTTP_SSL_CA)
+        ssl_context = ssl.create_default_context(cafile=AIOHTTP_SSL_CA or None)
 
-        if AIOHTTP_SSL_CERT or AIOHTTP_SSL_KEY:
-            if not (AIOHTTP_SSL_CERT and AIOHTTP_SSL_KEY):
-                raise ValueError(
-                    "Both AIOHTTP_SSL_CERT and AIOHTTP_SSL_KEY must be provided for mTLS"
-                )
+        if (AIOHTTP_SSL_CERT and not AIOHTTP_SSL_KEY) or (AIOHTTP_SSL_KEY and not AIOHTTP_SSL_CERT):
+            raise ValueError(
+                "Both AIOHTTP_SSL_CERT and AIOHTTP_SSL_KEY must be provided for mTLS"
+            )
 
+        if AIOHTTP_SSL_CERT and AIOHTTP_SSL_KEY:
             ssl_context.load_cert_chain(certfile=AIOHTTP_SSL_CERT, keyfile=AIOHTTP_SSL_KEY)
 
         AIOHTTP_CLIENT_SESSION_SSL = ssl_context
