@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import pkgutil
+import ssl
 import sys
 import shutil
 from uuid import uuid4
@@ -607,9 +608,35 @@ else:
         AIOHTTP_CLIENT_TIMEOUT = 300
 
 
-AIOHTTP_CLIENT_SESSION_SSL = (
+AIOHTTP_CLIENT_SESSION_SSL_ENABLED = (
     os.environ.get("AIOHTTP_CLIENT_SESSION_SSL", "True").lower() == "true"
 )
+AIOHTTP_CLIENT_SESSION_SSL = AIOHTTP_CLIENT_SESSION_SSL_ENABLED
+
+AIOHTTP_SSL_CERT = os.environ.get("AIOHTTP_SSL_CERT") or os.environ.get("AIOHTTP_CERT")
+AIOHTTP_SSL_KEY = os.environ.get("AIOHTTP_SSL_KEY") or os.environ.get("AIOHTTP_KEY")
+AIOHTTP_SSL_CA = os.environ.get("AIOHTTP_SSL_CA") or os.environ.get("AIOHTTP_CA")
+
+if AIOHTTP_CLIENT_SESSION_SSL_ENABLED and any([AIOHTTP_SSL_CERT, AIOHTTP_SSL_KEY, AIOHTTP_SSL_CA]):
+    try:
+        ssl_context = ssl.create_default_context(cafile=AIOHTTP_SSL_CA)
+
+        if AIOHTTP_SSL_CERT or AIOHTTP_SSL_KEY:
+            if not (AIOHTTP_SSL_CERT and AIOHTTP_SSL_KEY):
+                raise ValueError(
+                    "Both AIOHTTP_SSL_CERT and AIOHTTP_SSL_KEY must be provided for mTLS"
+                )
+
+            ssl_context.load_cert_chain(certfile=AIOHTTP_SSL_CERT, keyfile=AIOHTTP_SSL_KEY)
+
+        AIOHTTP_CLIENT_SESSION_SSL = ssl_context
+    except Exception as exc:  # pragma: no cover - best effort configuration
+        log.warning(
+            "Failed to configure aiohttp SSL context, falling back to boolean flag: %s",
+            exc,
+            exc_info=True,
+        )
+        AIOHTTP_CLIENT_SESSION_SSL = AIOHTTP_CLIENT_SESSION_SSL_ENABLED
 
 AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST = os.environ.get(
     "AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST",
