@@ -615,11 +615,12 @@ AIOHTTP_CLIENT_SESSION_SSL = AIOHTTP_CLIENT_SESSION_SSL_ENABLED
 
 AIOHTTP_SSL_CERT = os.environ.get("AIOHTTP_SSL_CERT") or os.environ.get("AIOHTTP_CERT")
 AIOHTTP_SSL_KEY = os.environ.get("AIOHTTP_SSL_KEY") or os.environ.get("AIOHTTP_KEY")
-AIOHTTP_SSL_CA = os.environ.get("AIOHTTP_SSL_CA") or os.environ.get("AIOHTTP_CA")
+_ssl_ca = os.environ.get("AIOHTTP_SSL_CA") or os.environ.get("AIOHTTP_CA")
+AIOHTTP_SSL_CA = _ssl_ca if _ssl_ca else None
 
 if AIOHTTP_CLIENT_SESSION_SSL_ENABLED and any([AIOHTTP_SSL_CERT, AIOHTTP_SSL_KEY, AIOHTTP_SSL_CA]):
     try:
-        ssl_context = ssl.create_default_context(cafile=AIOHTTP_SSL_CA or None)
+        ssl_context = ssl.create_default_context(cafile=AIOHTTP_SSL_CA)
 
         if (AIOHTTP_SSL_CERT and not AIOHTTP_SSL_KEY) or (AIOHTTP_SSL_KEY and not AIOHTTP_SSL_CERT):
             raise ValueError(
