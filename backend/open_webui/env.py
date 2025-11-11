@@ -618,7 +618,9 @@ AIOHTTP_SSL_KEY = os.environ.get("AIOHTTP_SSL_KEY") or os.environ.get("AIOHTTP_K
 _ssl_ca = os.environ.get("AIOHTTP_SSL_CA") or os.environ.get("AIOHTTP_CA")
 AIOHTTP_SSL_CA = _ssl_ca if _ssl_ca else None
 
-if AIOHTTP_CLIENT_SESSION_SSL_ENABLED and any([AIOHTTP_SSL_CERT, AIOHTTP_SSL_KEY, AIOHTTP_SSL_CA]):
+if AIOHTTP_CLIENT_SESSION_SSL_ENABLED and any(
+    [AIOHTTP_SSL_CERT, AIOHTTP_SSL_KEY, AIOHTTP_SSL_CA]
+):
     try:
         # Validate mTLS configuration: if client cert/key is specified, both must be provided
         if AIOHTTP_SSL_CERT or AIOHTTP_SSL_KEY:
@@ -626,12 +628,25 @@ if AIOHTTP_CLIENT_SESSION_SSL_ENABLED and any([AIOHTTP_SSL_CERT, AIOHTTP_SSL_KEY
                 raise ValueError(
                     "Both AIOHTTP_SSL_CERT and AIOHTTP_SSL_KEY must be provided for client certificate authentication"
                 )
+
         # Create SSL context with CA bundle if provided (for server certificate verification)
-        ssl_context = ssl.create_default_context(cafile=AIOHTTP_SSL_CA)
+        try:
+            ssl_context = ssl.create_default_context(cafile=AIOHTTP_SSL_CA)
+        except Exception as ca_exc:
+            raise ValueError(
+                f"Failed to load CA certificate from AIOHTTP_SSL_CA='{AIOHTTP_SSL_CA}': {ca_exc}"
+            ) from ca_exc
 
         # Load client certificate for mTLS if provided
         if AIOHTTP_SSL_CERT and AIOHTTP_SSL_KEY:
-            ssl_context.load_cert_chain(certfile=AIOHTTP_SSL_CERT, keyfile=AIOHTTP_SSL_KEY)
+            try:
+                ssl_context.load_cert_chain(
+                    certfile=AIOHTTP_SSL_CERT, keyfile=AIOHTTP_SSL_KEY
+                )
+            except Exception as cert_exc:
+                raise ValueError(
+                    f"Failed to load client certificate/key from AIOHTTP_SSL_CERT='{AIOHTTP_SSL_CERT}' and AIOHTTP_SSL_KEY='{AIOHTTP_SSL_KEY}': {cert_exc}"
+                ) from cert_exc
 
         AIOHTTP_CLIENT_SESSION_SSL = ssl_context
     except Exception as exc:  # pragma: no cover - best effort configuration
