@@ -626,7 +626,6 @@ if AIOHTTP_CLIENT_SESSION_SSL_ENABLED and any([AIOHTTP_SSL_CERT, AIOHTTP_SSL_KEY
                 raise ValueError(
                     "Both AIOHTTP_SSL_CERT and AIOHTTP_SSL_KEY must be provided for client certificate authentication"
                 )
-        
         # Create SSL context with CA bundle if provided (for server certificate verification)
         ssl_context = ssl.create_default_context(cafile=AIOHTTP_SSL_CA)
 
