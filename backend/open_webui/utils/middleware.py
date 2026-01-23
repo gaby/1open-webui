@@ -505,7 +505,7 @@ async def chat_completion_tools_handler(
 
         recent_messages = messages[-4:] if len(messages) > 4 else messages
         chat_history = "\n".join(
-            f"{message['role'].upper()}: \"\"\"{get_content_from_message(message)}\"\"\""
+            f'{message["role"].upper()}: """{get_content_from_message(message)}"""'
             for message in recent_messages
         )
 
@@ -915,7 +915,6 @@ def get_images_from_messages(message_list):
     images = []
 
     for message in reversed(message_list):
-
         message_images = []
         for file in message.get("files", []):
             if file.get("type") == "image":
@@ -1250,7 +1249,8 @@ async def chat_completion_files_handler(
                 request=request,
                 items=files,
                 queries=queries,
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                embedding_function=lambda query,
+                prefix: request.app.state.EMBEDDING_FUNCTION(
                     query, prefix=prefix, user=user
                 ),
                 k=request.app.state.config.TOP_K,
@@ -1808,9 +1808,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Inject builtin tools for native function calling based on enabled features and model capability
     # Check if builtin_tools capability is enabled for this model (defaults to True if not specified)
     builtin_tools_enabled = (
-        (model.get("info", {}).get("meta", {}).get("capabilities") or {})
-        .get("builtin_tools", True)
-    )
+        model.get("info", {}).get("meta", {}).get("capabilities") or {}
+    ).get("builtin_tools", True)
     if (
         metadata.get("params", {}).get("function_calling") == "native"
         and builtin_tools_enabled
@@ -1854,9 +1853,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Check if file context extraction is enabled for this model (default True)
     file_context_enabled = (
-        (model.get("info", {}).get("meta", {}).get("capabilities") or {})
-        .get("file_context", True)
-    )
+        model.get("info", {}).get("meta", {}).get("capabilities") or {}
+    ).get("file_context", True)
 
     if file_context_enabled:
         try:
@@ -2360,10 +2358,8 @@ async def process_chat_response(
                             content += "\n"
 
                         if results:
-
                             tool_calls_display_content = ""
                             for tool_call in tool_calls:
-
                                 tool_call_id = tool_call.get("id", "")
                                 tool_name = tool_call.get("function", {}).get(
                                     "name", ""
@@ -2424,14 +2420,14 @@ async def process_chat_response(
                         if reasoning_duration is not None:
                             if raw:
                                 content = (
-                                    f'{content}{start_tag}{block["content"]}{end_tag}\n'
+                                    f"{content}{start_tag}{block['content']}{end_tag}\n"
                                 )
                             else:
                                 content = f'{content}<details type="reasoning" done="true" duration="{reasoning_duration}">\n<summary>Thought for {reasoning_duration} seconds</summary>\n{reasoning_display_content}\n</details>\n'
                         else:
                             if raw:
                                 content = (
-                                    f'{content}{start_tag}{block["content"]}{end_tag}\n'
+                                    f"{content}{start_tag}{block['content']}{end_tag}\n"
                                 )
                             else:
                                 content = f'{content}<details type="reasoning" done="false">\n<summary>Thinking…</summary>\n{reasoning_display_content}\n</details>\n'
@@ -2533,7 +2529,6 @@ async def process_chat_response(
 
                 if content_blocks[-1]["type"] == "text":
                     for start_tag, end_tag in tags:
-
                         start_tag_pattern = rf"{re.escape(start_tag)}"
                         if start_tag.startswith("<") and start_tag.endswith(">"):
                             # Match start tag e.g., <tag> or <tag attr="value">
@@ -2640,7 +2635,6 @@ async def process_chat_response(
                             # Reset the content_blocks by appending a new text block
                             if content_type != "code_interpreter":
                                 if leftover_content:
-
                                     content_blocks.append(
                                         {
                                             "type": "text",
@@ -2711,7 +2705,9 @@ async def process_chat_response(
             content = (
                 message.get("content", "")
                 if message
-                else last_assistant_message if last_assistant_message else ""
+                else last_assistant_message
+                if last_assistant_message
+                else ""
             )
 
             content_blocks = [
@@ -3204,7 +3200,6 @@ async def process_chat_response(
                     len(tool_calls) > 0
                     and tool_call_retries < CHAT_RESPONSE_MAX_TOOL_CALL_RETRIES
                 ):
-
                     tool_call_retries += 1
 
                     response_tool_calls = tool_calls.pop(0)
@@ -3440,7 +3435,6 @@ async def process_chat_response(
                         content_blocks[-1]["type"] == "code_interpreter"
                         and retries < MAX_RETRIES
                     ):
-
                         await event_emitter(
                             {
                                 "type": "chat:completion",
@@ -3529,7 +3523,6 @@ async def process_chat_response(
                                     if isinstance(stdout, str):
                                         stdoutLines = stdout.split("\n")
                                         for idx, line in enumerate(stdoutLines):
-
                                             if "data:image/png;base64" in line:
                                                 image_url = get_image_url_from_base64(
                                                     request,

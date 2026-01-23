@@ -84,11 +84,10 @@ def search_perplexity(
                 if i == 0:
                     content = json_response["choices"][0]["message"]["content"]
 
-            result = {"link": citation, "title": f"Source {i+1}", "snippet": content}
+            result = {"link": citation, "title": f"Source {i + 1}", "snippet": content}
             results.append(result)
 
         if filter_list:
-
             results = get_filtered_results(results, filter_list)
 
         return [

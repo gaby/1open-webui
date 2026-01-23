@@ -2252,7 +2252,9 @@ WEAVIATE_GRPC_PORT = int(os.environ.get("WEAVIATE_GRPC_PORT", "50051"))
 WEAVIATE_API_KEY = os.environ.get("WEAVIATE_API_KEY")
 WEAVIATE_HTTP_SECURE = os.environ.get("WEAVIATE_HTTP_SECURE", "false").lower() == "true"
 WEAVIATE_GRPC_SECURE = os.environ.get("WEAVIATE_GRPC_SECURE", "false").lower() == "true"
-WEAVIATE_SKIP_INIT_CHECKS = os.environ.get("WEAVIATE_SKIP_INIT_CHECKS", "false").lower() == "true"
+WEAVIATE_SKIP_INIT_CHECKS = (
+    os.environ.get("WEAVIATE_SKIP_INIT_CHECKS", "false").lower() == "true"
+)
 
 # OpenSearch
 OPENSEARCH_URI = os.environ.get("OPENSEARCH_URI", "https://localhost:9200")

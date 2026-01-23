@@ -826,7 +826,6 @@ async def delete_file_by_id(
         or user.role == "admin"
         or has_access_to_file(id, "write", user, db=db)
     ):
-
         result = Files.delete_file_by_id(id, db=db)
         if result:
             try:

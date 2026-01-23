@@ -152,12 +152,15 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
         if custom_model.base_model_id is None:
             # Applied directly to a base model
             for model in models:
-                if custom_model.id == model["id"] or (
-                    model.get("owned_by") == "ollama"
-                    and custom_model.id
-                    == model["id"].split(":")[
-                        0
-                    ]  # Ollama may return model ids in different formats (e.g., 'llama3' vs. 'llama3:7b')
+                if (
+                    custom_model.id == model["id"]
+                    or (
+                        model.get("owned_by") == "ollama"
+                        and custom_model.id
+                        == model["id"].split(":")[
+                            0
+                        ]  # Ollama may return model ids in different formats (e.g., 'llama3' vs. 'llama3:7b')
+                    )
                 ):
                     if custom_model.is_active:
                         model["name"] = custom_model.name

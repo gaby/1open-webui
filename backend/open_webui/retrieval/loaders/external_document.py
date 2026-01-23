@@ -58,7 +58,6 @@ class ExternalDocumentLoader(BaseLoader):
             raise Exception(f"Error connecting to endpoint: {e}")
 
         if response.ok:
-
             response_data = response.json()
             if response_data:
                 if isinstance(response_data, dict):

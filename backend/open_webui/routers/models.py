@@ -65,7 +65,6 @@ async def get_models(
     user=Depends(get_verified_user),
     db: Session = Depends(get_session),
 ):
-
     limit = PAGE_ITEM_COUNT
 
     page = max(1, page)

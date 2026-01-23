@@ -37,7 +37,6 @@ async def get_groups(
     user=Depends(get_verified_user),
     db: Session = Depends(get_session),
 ):
-
     filter = {}
 
     # Admins can share to all groups regardless of share setting

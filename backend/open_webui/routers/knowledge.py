@@ -349,7 +349,7 @@ async def reindex_knowledge_base_metadata_embeddings(
     user=Depends(get_admin_user),
 ):
     """Batch embed all existing knowledge bases. Admin only.
-    
+
     NOTE: We intentionally do NOT use Depends(get_session) here.
     This endpoint loops through ALL knowledge bases and calls embed_knowledge_base_metadata()
     for each one, making N external embedding API calls. Holding a session during
@@ -389,7 +389,6 @@ async def get_knowledge_by_id(
             or knowledge.user_id == user.id
             or has_access(user.id, "read", knowledge.access_control, db=db)
         ):
-
             return KnowledgeFilesResponse(
                 **knowledge.model_dump(),
                 write_access=(
@@ -491,7 +490,6 @@ async def get_knowledge_files_by_id(
     user=Depends(get_verified_user),
     db: Session = Depends(get_session),
 ):
-
     knowledge = Knowledges.get_knowledge_by_id(id=id, db=db)
     if not knowledge:
         raise HTTPException(
@@ -627,7 +625,6 @@ def update_file_from_knowledge_by_id(
         and not has_access(user.id, "write", knowledge.access_control, db=db)
         and user.role != "admin"
     ):
-
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,

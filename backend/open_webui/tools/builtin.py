@@ -376,6 +376,7 @@ async def execute_code(
         # Add import blocking code if there are blocked modules
         if CODE_INTERPRETER_BLOCKED_MODULES:
             import textwrap
+
             blocking_code = textwrap.dedent(
                 f"""
                 import builtins
@@ -397,11 +398,17 @@ async def execute_code(
             )
             code = blocking_code + "\n" + code
 
-        engine = getattr(__request__.app.state.config, "CODE_INTERPRETER_ENGINE", "pyodide")
+        engine = getattr(
+            __request__.app.state.config, "CODE_INTERPRETER_ENGINE", "pyodide"
+        )
         if engine == "pyodide":
             # Execute via frontend pyodide using bidirectional event call
             if __event_call__ is None:
-                return json.dumps({"error": "Event call not available. WebSocket connection required for pyodide execution."})
+                return json.dumps(
+                    {
+                        "error": "Event call not available. WebSocket connection required for pyodide execution."
+                    }
+                )
 
             output = await __event_call__(
                 {
@@ -409,7 +416,9 @@ async def execute_code(
                     "data": {
                         "id": str(uuid4()),
                         "code": code,
-                        "session_id": __metadata__.get("session_id") if __metadata__ else None,
+                        "session_id": __metadata__.get("session_id")
+                        if __metadata__
+                        else None,
                     },
                 }
             )
@@ -432,12 +441,14 @@ async def execute_code(
                 code,
                 (
                     __request__.app.state.config.CODE_INTERPRETER_JUPYTER_AUTH_TOKEN
-                    if __request__.app.state.config.CODE_INTERPRETER_JUPYTER_AUTH == "token"
+                    if __request__.app.state.config.CODE_INTERPRETER_JUPYTER_AUTH
+                    == "token"
                     else None
                 ),
                 (
                     __request__.app.state.config.CODE_INTERPRETER_JUPYTER_AUTH_PASSWORD
-                    if __request__.app.state.config.CODE_INTERPRETER_JUPYTER_AUTH == "password"
+                    if __request__.app.state.config.CODE_INTERPRETER_JUPYTER_AUTH
+                    == "password"
                     else None
                 ),
                 __request__.app.state.config.CODE_INTERPRETER_JUPYTER_TIMEOUT,

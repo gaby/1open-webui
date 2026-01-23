@@ -36,7 +36,6 @@ class ColBERT(BaseReranker):
         pass
 
     def calculate_similarity_scores(self, query_embeddings, document_embeddings):
-
         query_embeddings = query_embeddings.to(self.device)
         document_embeddings = document_embeddings.to(self.device)
 
@@ -69,7 +68,6 @@ class ColBERT(BaseReranker):
         return normalized_scores.detach().cpu().numpy().astype(np.float32)
 
     def predict(self, sentences):
-
         query = sentences[0][0]
         docs = [i[1] for i in sentences]
 

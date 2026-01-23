@@ -84,7 +84,6 @@ async def get_folders(
             if "files" in folder.data:
                 valid_files = []
                 for file in folder.data["files"]:
-
                     if file.get("type") == "file":
                         if Files.check_access_by_user_id(
                             file.get("id"), user.id, "read", db=db
@@ -174,7 +173,6 @@ async def update_folder_name_by_id(
 ):
     folder = Folders.get_folder_by_id_and_user_id(id, user.id, db=db)
     if folder:
-
         if form_data.name is not None:
             # Check if folder with same name exists
             existing_folder = Folders.get_folder_by_parent_id_and_user_id_and_name(

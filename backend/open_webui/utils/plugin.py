@@ -151,7 +151,6 @@ def resolve_valves_schema_options(
     return schema
 
 
-
 def extract_frontmatter(content):
     """
     Extract frontmatter as a dictionary from the provided content string.
@@ -206,7 +205,6 @@ def replace_imports(content):
 
 
 def load_tool_module_by_id(tool_id, content=None):
-
     if content is None:
         tool = Tools.get_tool_by_id(tool_id)
         if not tool:

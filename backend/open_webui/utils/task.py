@@ -37,7 +37,6 @@ def prompt_variables_template(template: str, variables: dict[str, str]) -> str:
 
 
 def prompt_template(template: str, user: Optional[Any] = None) -> str:
-
     USER_VARIABLES = {}
 
     if user:
@@ -232,7 +231,6 @@ def rag_template(template: str, context: str, query: str):
 def title_generation_template(
     template: str, messages: list[dict], user: Optional[Any] = None
 ) -> str:
-
     prompt = get_last_user_message(messages)
     template = replace_prompt_variable(template, prompt)
     template = replace_messages_variable(template, messages)

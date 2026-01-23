@@ -110,7 +110,6 @@ async def get_session_user(
     user=Depends(get_current_user),
     db: Session = Depends(get_session),
 ):
-
     auth_header = request.headers.get("Authorization")
     auth_token = get_http_authorization_cred(auth_header)
     token = auth_token.credentials
@@ -646,7 +645,6 @@ async def signin(
         )
 
     if user:
-
         expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
         expires_at = None
         if expires_delta:
@@ -824,7 +822,6 @@ async def signup(
 async def signout(
     request: Request, response: Response, db: Session = Depends(get_session)
 ):
-
     # get auth token from headers or cookies
     token = None
     auth_header = request.headers.get("Authorization")

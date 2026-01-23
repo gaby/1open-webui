@@ -252,7 +252,6 @@ class ChannelWebhookForm(BaseModel):
 
 
 class ChannelTable:
-
     def _collect_unique_user_ids(
         self,
         invited_by: str,

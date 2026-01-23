@@ -554,9 +554,7 @@ if LICENSE_PUBLIC_KEY:
 -----BEGIN PUBLIC KEY-----
 {LICENSE_PUBLIC_KEY}
 -----END PUBLIC KEY-----
-""".encode(
-            "utf-8"
-        )
+""".encode("utf-8")
     )
 
 

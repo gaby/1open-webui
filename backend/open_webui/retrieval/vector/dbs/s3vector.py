@@ -207,7 +207,7 @@ class S3VectorClient(VectorDBBase):
                     vectors=batch,
                 )
                 log.info(
-                    f"Inserted batch {i//batch_size + 1}: {len(batch)} vectors into index '{collection_name}'."
+                    f"Inserted batch {i // batch_size + 1}: {len(batch)} vectors into index '{collection_name}'."
                 )
 
             log.info(
@@ -278,7 +278,7 @@ class S3VectorClient(VectorDBBase):
                     )
                 else:
                     log.info(
-                        f"Upserting batch {i//batch_size + 1}: {len(batch)} vectors."
+                        f"Upserting batch {i // batch_size + 1}: {len(batch)} vectors."
                     )
 
                 self.client.put_vectors(
@@ -326,7 +326,7 @@ class S3VectorClient(VectorDBBase):
 
             # Process each query vector
             for i, query_vector in enumerate(vectors):
-                log.debug(f"Processing query vector {i+1}/{len(vectors)}")
+                log.debug(f"Processing query vector {i + 1}/{len(vectors)}")
 
                 # Prepare the query vector in S3 Vector format
                 query_vector_dict = {"float32": [float(x) for x in query_vector]}

@@ -585,7 +585,6 @@ async def image_generations(
     r = None
     try:
         if request.app.state.config.IMAGE_GENERATION_ENGINE == "openai":
-
             headers = {
                 "Authorization": f"Bearer {request.app.state.config.IMAGES_OPENAI_API_KEY}",
                 "Content-Type": "application/json",

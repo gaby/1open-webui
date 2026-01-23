@@ -122,7 +122,6 @@ async def send_post_request(
     user: UserModel = None,
     metadata: Optional[dict] = None,
 ):
-
     r = None
     try:
         session = aiohttp.ClientSession(
@@ -1555,7 +1554,6 @@ async def get_openai_models(
     user=Depends(get_verified_user),
     db: Session = Depends(get_session),
 ):
-
     models = []
     if url_idx is None:
         model_list = await get_all_models(request, user=user)

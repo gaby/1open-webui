@@ -532,7 +532,6 @@ async def delete_all_user_chats(
     user=Depends(get_verified_user),
     db: Session = Depends(get_session),
 ):
-
     if user.role == "user" and not has_permission(
         user.id, "chat.delete", request.app.state.config.USER_PERMISSIONS
     ):
@@ -1218,7 +1217,6 @@ async def clone_chat_by_id(
 async def clone_shared_chat_by_id(
     id: str, user=Depends(get_verified_user), db: Session = Depends(get_session)
 ):
-
     if user.role == "admin":
         chat = Chats.get_chat_by_id(id, db=db)
     else:

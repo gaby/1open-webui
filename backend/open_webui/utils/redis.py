@@ -169,7 +169,6 @@ def get_redis_connection(
     async_mode=False,
     decode_responses=True,
 ):
-
     cache_key = (
         redis_url,
         tuple(redis_sentinels) if redis_sentinels else (),

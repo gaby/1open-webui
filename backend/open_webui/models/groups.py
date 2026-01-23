@@ -442,7 +442,6 @@ class GroupTable:
     def create_groups_by_group_names(
         self, user_id: str, group_names: list[str], db: Optional[Session] = None
     ) -> list[GroupModel]:
-
         # check for existing groups
         existing_groups = self.get_all_groups(db=db)
         existing_group_names = {group.name for group in existing_groups}

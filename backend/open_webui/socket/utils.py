@@ -15,7 +15,6 @@ class RedisLock:
         redis_sentinels=[],
         redis_cluster=False,
     ):
-
         self.lock_name = lock_name
         self.lock_id = str(uuid.uuid4())
         self.timeout_secs = timeout_secs

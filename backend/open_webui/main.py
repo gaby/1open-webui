@@ -1670,7 +1670,6 @@ async def chat_completion(
             if not metadata["chat_id"].startswith(
                 "local:"
             ):  # temporary chats are not stored
-
                 # Verify chat ownership
                 chat = Chats.get_chat_by_id_and_user_id(metadata["chat_id"], user.id)
                 if chat is None and user.role != "admin":  # admins can access any chat

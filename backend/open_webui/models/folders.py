@@ -310,7 +310,6 @@ class FolderTable:
                         folder.id, user_id, db=db
                     )
                     for folder_child in folder_children:
-
                         delete_children(folder_child)
                         folder_ids.append(folder_child.id)
 

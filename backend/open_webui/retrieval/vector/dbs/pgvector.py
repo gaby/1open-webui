@@ -87,7 +87,6 @@ class DocumentChunk(Base):
 
 class PgvectorClient(VectorDBBase):
     def __init__(self) -> None:
-
         # if no pgvector uri, use the existing database connection
         if not PGVECTOR_DB_URL:
             from open_webui.internal.db import ScopedSession
@@ -654,7 +653,6 @@ class PgvectorClient(VectorDBBase):
                 documents = [[row.text for row in results]]
                 metadatas = [[row.vmetadata for row in results]]
             else:
-
                 query = self.session.query(DocumentChunk).filter(
                     DocumentChunk.collection_name == collection_name
                 )

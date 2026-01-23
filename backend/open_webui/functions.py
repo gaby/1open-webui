@@ -111,7 +111,7 @@ async def get_function_models(request):
                 )
 
                 for p in sub_pipes:
-                    sub_pipe_id = f'{pipe.id}.{p["id"]}'
+                    sub_pipe_id = f"{pipe.id}.{p['id']}"
                     sub_pipe_name = p["name"]
 
                     if hasattr(function_module, "name"):
@@ -311,7 +311,7 @@ async def generate_function_chat_completion(
 
             except Exception as e:
                 log.error(f"Error: {e}")
-                yield f"data: {json.dumps({'error': {'detail':str(e)}})}\n\n"
+                yield f"data: {json.dumps({'error': {'detail': str(e)}})}\n\n"
                 return
 
             if isinstance(res, str):

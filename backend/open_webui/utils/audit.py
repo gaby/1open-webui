@@ -75,7 +75,6 @@ class AuditLogger:
         log_level: str = "INFO",
         extra: Optional[dict] = None,
     ):
-
         entry = asdict(audit_entry)
 
         if extra:
@@ -222,7 +221,9 @@ class AuditLoggingMiddleware:
 
         # Skip logging if the request is not authenticated
         # Check both Authorization header (API keys) and token cookie (browser sessions)
-        if not request.headers.get("authorization") and not request.cookies.get("token"):
+        if not request.headers.get("authorization") and not request.cookies.get(
+            "token"
+        ):
             return True
 
         # match either /api/<resource>/...(for the endpoint /api/chat case) or /api/v1/<resource>/...
