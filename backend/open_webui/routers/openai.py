@@ -192,6 +192,25 @@ def get_microsoft_entra_id_access_token():
         return None
 
 
+def resolve_base_model_id(
+    request: Request,
+    model_id: Optional[str],
+    model_info=None,
+) -> Optional[str]:
+    if not model_id:
+        return model_id
+
+    model_info = model_info or Models.get_model_by_id(model_id)
+    if model_info and model_info.base_model_id:
+        return (
+            request.base_model_id
+            if hasattr(request, "base_model_id")
+            else model_info.base_model_id
+        )
+
+    return model_id
+
+
 ##########################################
 #
 # API routes
@@ -952,11 +971,7 @@ async def generate_chat_completion(
     # Check model info and override the payload
     if model_info:
         if model_info.base_model_id:
-            base_model_id = (
-                request.base_model_id
-                if hasattr(request, "base_model_id")
-                else model_info.base_model_id
-            )  # Use request's base_model_id if available
+            base_model_id = resolve_base_model_id(request, model_id, model_info)
             payload["model"] = base_model_id
             model_id = base_model_id
 
@@ -1154,10 +1169,13 @@ async def embeddings(request: Request, form_data: dict, user):
         dict: OpenAI-compatible embeddings response.
     """
     idx = 0
+    # Find correct backend url/key based on model
+    model_id = resolve_base_model_id(request, form_data.get("model"))
+    if model_id:
+        form_data["model"] = model_id
+
     # Prepare payload/body
     body = json.dumps(form_data)
-    # Find correct backend url/key based on model
-    model_id = form_data.get("model")
     # Check if model is already in app state cache to avoid expensive get_all_models() call
     models = request.app.state.OPENAI_MODELS
     if not models or model_id not in models:
@@ -1254,10 +1272,13 @@ async def responses(
     Routes to the correct upstream backend based on the model field.
     """
     payload = form_data.model_dump(exclude_none=True)
-    body = json.dumps(payload)
 
     idx = 0
-    model_id = form_data.model
+    model_id = resolve_base_model_id(request, form_data.model)
+    if model_id:
+        payload["model"] = model_id
+
+    body = json.dumps(payload)
     if model_id:
         models = request.app.state.OPENAI_MODELS
         if not models or model_id not in models:
@@ -1363,7 +1384,15 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             payload = None
 
     idx = 0
-    model_id = payload.get("model") if isinstance(payload, dict) else None
+    model_id = (
+        resolve_base_model_id(request, payload.get("model"))
+        if isinstance(payload, dict)
+        else None
+    )
+    if model_id and isinstance(payload, dict):
+        payload["model"] = model_id
+        body = json.dumps(payload).encode()
+
     if model_id:
         models = request.app.state.OPENAI_MODELS
         if not models or model_id not in models:
