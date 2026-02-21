@@ -970,10 +970,8 @@ async def generate_chat_completion(
 
     # Check model info and override the payload
     if model_info:
-        if model_info.base_model_id:
-            base_model_id = resolve_base_model_id(request, model_id, model_info)
-            payload["model"] = base_model_id
-            model_id = base_model_id
+        model_id = resolve_base_model_id(request, model_id, model_info)
+        payload["model"] = model_id
 
         params = model_info.params.model_dump()
 
