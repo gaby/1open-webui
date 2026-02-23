@@ -207,6 +207,15 @@ def resolve_base_model_id(
     if not model_id:
         return model_id
 
+    # Try in-memory lookup first to avoid a DB round-trip
+    models = getattr(request.app.state, "MODELS", None)
+    if models:
+        state_model = models.get(model_id)
+        if state_model is not None:
+            base_id = state_model.get("info", {}).get("base_model_id")
+            return base_id if base_id else model_id
+
+    # Fall back to DB if model not found in in-memory state
     model_info = model_info or Models.get_model_by_id(model_id)
     if model_info and model_info.base_model_id:
         return (
