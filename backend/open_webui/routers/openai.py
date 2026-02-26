@@ -1205,6 +1205,11 @@ async def embeddings(request: Request, form_data: dict, user):
         request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
     )
 
+    prefix_id = api_config.get("prefix_id", None)
+    if prefix_id:
+        form_data["model"] = form_data["model"].replace(f"{prefix_id}.", "")
+        body = json.dumps(form_data)
+
     r = None
     session = None
     streaming = False
@@ -1310,6 +1315,11 @@ async def responses(
         str(idx),
         request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
     )
+
+    prefix_id = api_config.get("prefix_id", None)
+    if prefix_id:
+        payload["model"] = payload["model"].replace(f"{prefix_id}.", "")
+        body = json.dumps(payload)
 
     r = None
     session = None
@@ -1426,6 +1436,11 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
         ),  # Legacy support
     )
+
+    prefix_id = api_config.get("prefix_id", None)
+    if prefix_id and isinstance(payload, dict) and payload.get("model"):
+        payload["model"] = payload["model"].replace(f"{prefix_id}.", "")
+        body = json.dumps(payload).encode()
 
     r = None
     session = None
