@@ -227,6 +227,44 @@ def resolve_base_model_id(
     return model_id
 
 
+async def resolve_model_and_backend(
+    request: Request,
+    model_id: Optional[str],
+    user,
+) -> tuple:
+    """
+    Resolve a model alias to its base model ID, look up the backend
+    index from the OPENAI_MODELS cache, retrieve the corresponding
+    url / key / api_config, and strip any configured prefix_id.
+
+    Returns (idx, url, key, api_config, resolved_model_id).
+    """
+    resolved_id = resolve_base_model_id(request, model_id)
+
+    idx = 0
+    if resolved_id:
+        models = request.app.state.OPENAI_MODELS
+        if not models or resolved_id not in models:
+            await get_all_models(request, user=user)
+            models = request.app.state.OPENAI_MODELS
+        if resolved_id in models:
+            idx = models[resolved_id]["urlIdx"]
+
+    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
+    key = request.app.state.config.OPENAI_API_KEYS[idx]
+    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+        str(idx),
+        request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),
+    )
+
+    if resolved_id:
+        prefix_id = api_config.get("prefix_id", None)
+        if prefix_id:
+            resolved_id = resolved_id.replace(f"{prefix_id}.", "")
+
+    return idx, url, key, api_config, resolved_id
+
+
 ##########################################
 #
 # API routes
@@ -1182,33 +1220,12 @@ async def embeddings(request: Request, form_data: dict, user):
     Returns:
         dict: OpenAI-compatible embeddings response.
     """
-    idx = 0
-    # Find correct backend url/key based on model
-    model_id = resolve_base_model_id(request, form_data.get("model"))
+    idx, url, key, api_config, model_id = await resolve_model_and_backend(
+        request, form_data.get("model"), user
+    )
     if model_id:
         form_data["model"] = model_id
-
-    # Prepare payload/body
     body = json.dumps(form_data)
-    # Check if model is already in app state cache to avoid expensive get_all_models() call
-    models = request.app.state.OPENAI_MODELS
-    if not models or model_id not in models:
-        await get_all_models(request, user=user)
-        models = request.app.state.OPENAI_MODELS
-    if model_id in models:
-        idx = models[model_id]["urlIdx"]
-
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
-    )
-
-    prefix_id = api_config.get("prefix_id", None)
-    if prefix_id and form_data.get("model"):
-        form_data["model"] = form_data["model"].replace(f"{prefix_id}.", "")
-        body = json.dumps(form_data)
 
     r = None
     session = None
@@ -1295,31 +1312,12 @@ async def responses(
     """
     payload = form_data.model_dump(exclude_none=True)
 
-    idx = 0
-    model_id = resolve_base_model_id(request, form_data.model)
+    idx, url, key, api_config, model_id = await resolve_model_and_backend(
+        request, form_data.model, user
+    )
     if model_id:
         payload["model"] = model_id
-
     body = json.dumps(payload)
-    if model_id:
-        models = request.app.state.OPENAI_MODELS
-        if not models or model_id not in models:
-            await get_all_models(request, user=user)
-            models = request.app.state.OPENAI_MODELS
-        if model_id in models:
-            idx = models[model_id]["urlIdx"]
-
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
-    )
-
-    prefix_id = api_config.get("prefix_id", None)
-    if prefix_id and payload.get("model"):
-        payload["model"] = payload["model"].replace(f"{prefix_id}.", "")
-        body = json.dumps(payload)
 
     r = None
     session = None
@@ -1410,36 +1408,12 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
         except (json.JSONDecodeError, ValueError):
             payload = None
 
-    idx = 0
-    model_id = (
-        resolve_base_model_id(request, payload.get("model"))
-        if isinstance(payload, dict)
-        else None
+    raw_model_id = payload.get("model") if isinstance(payload, dict) else None
+    idx, url, key, api_config, model_id = await resolve_model_and_backend(
+        request, raw_model_id, user
     )
     if model_id and isinstance(payload, dict):
         payload["model"] = model_id
-        body = json.dumps(payload).encode()
-
-    if model_id:
-        models = request.app.state.OPENAI_MODELS
-        if not models or model_id not in models:
-            await get_all_models(request, user=user)
-            models = request.app.state.OPENAI_MODELS
-        if model_id in models:
-            idx = models[model_id]["urlIdx"]
-
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(
-            request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
-        ),  # Legacy support
-    )
-
-    prefix_id = api_config.get("prefix_id", None)
-    if prefix_id and isinstance(payload, dict) and payload.get("model"):
-        payload["model"] = payload["model"].replace(f"{prefix_id}.", "")
         body = json.dumps(payload).encode()
 
     r = None
