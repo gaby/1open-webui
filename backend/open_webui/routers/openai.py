@@ -1206,7 +1206,7 @@ async def embeddings(request: Request, form_data: dict, user):
     )
 
     prefix_id = api_config.get("prefix_id", None)
-    if prefix_id:
+    if prefix_id and form_data.get("model"):
         form_data["model"] = form_data["model"].replace(f"{prefix_id}.", "")
         body = json.dumps(form_data)
 
@@ -1317,7 +1317,7 @@ async def responses(
     )
 
     prefix_id = api_config.get("prefix_id", None)
-    if prefix_id:
+    if prefix_id and payload.get("model"):
         payload["model"] = payload["model"].replace(f"{prefix_id}.", "")
         body = json.dumps(payload)
 
