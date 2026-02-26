@@ -1062,32 +1062,21 @@ async def generate_chat_completion(
                 detail="Model not found",
             )
 
-    # Check if model is already in app state cache to avoid expensive get_all_models() call
-    models = request.app.state.OPENAI_MODELS
-    if not models or model_id not in models:
-        await get_all_models(request, user=user)
-        models = request.app.state.OPENAI_MODELS
-    model = models.get(model_id)
+    # Use shared helper for backend selection, url/key retrieval, and prefix_id stripping
+    idx, url, key, api_config, resolved_model_id = await resolve_model_and_backend(
+        request, model_id, user
+    )
 
-    if model:
-        idx = model["urlIdx"]
-    else:
+    # Verify the model was found (resolve_model_and_backend falls back to idx=0 if not found)
+    models = request.app.state.OPENAI_MODELS
+    model = models.get(model_id)
+    if not model:
         raise HTTPException(
             status_code=404,
             detail="Model not found",
         )
 
-    # Get the API config for the model
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(
-            request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
-        ),  # Legacy support
-    )
-
-    prefix_id = api_config.get("prefix_id", None)
-    if prefix_id:
-        payload["model"] = payload["model"].replace(f"{prefix_id}.", "")
+    payload["model"] = resolved_model_id
 
     # Add user info to the payload if the model is a pipeline
     if "pipeline" in model and model.get("pipeline"):
@@ -1097,9 +1086,6 @@ async def generate_chat_completion(
             "email": user.email,
             "role": user.role,
         }
-
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
 
     # Check if model is a reasoning model that needs special handling
     if is_openai_reasoning_model(payload["model"]):
