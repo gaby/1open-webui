@@ -202,7 +202,7 @@ def get_microsoft_entra_id_access_token():
 def resolve_base_model_id(
     request: Request,
     model_id: Optional[str],
-    model_info=None,
+    model_info: Optional[Models] = None,
 ) -> Optional[str]:
     if not model_id:
         return model_id
