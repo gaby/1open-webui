@@ -218,11 +218,7 @@ def resolve_base_model_id(
     # Fall back to DB if model not found in in-memory state
     model_info = model_info or Models.get_model_by_id(model_id)
     if model_info and model_info.base_model_id:
-        return (
-            request.base_model_id
-            if hasattr(request, "base_model_id")
-            else model_info.base_model_id
-        )
+        return model_info.base_model_id
 
     return model_id
 
