@@ -226,7 +226,7 @@ def resolve_base_model_id(
 async def resolve_model_and_backend(
     request: Request,
     model_id: Optional[str],
-    user,
+    user: UserModel,
 ) -> tuple:
     """
     Resolve a model alias to its base model ID, look up the backend
