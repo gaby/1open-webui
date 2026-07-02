@@ -2,101 +2,181 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import uuid
 
 import pycrdt as Y
-from open_webui.utils.redis import get_redis_connection
 from open_webui.env import REDIS_KEY_PREFIX
+
+log = logging.getLogger(__name__)
 
 YDOC_KEY_PREFIX = f'{REDIS_KEY_PREFIX}:ydoc:documents'
 
 
-class RedisLock:
-    """Distributed lock backed by a Redis SET with NX/EX semantics."""
+class AsyncRedisLock:
+    """Distributed lock backed by a Redis SET with NX/EX semantics.
 
-    def __init__(
-        self,
-        redis_url,
-        lock_name,
-        timeout_secs,
-        redis_sentinels=[],
-        redis_cluster=False,
-    ):
+    All methods are coroutines running on an async Redis client, so lock
+    operations never block the event loop.
+    """
+
+    def __init__(self, redis, lock_name, timeout_secs):
+        self.redis = redis
         self.lock_name = lock_name
         self.lock_id = str(uuid.uuid4())
         self.timeout_secs = timeout_secs
-        self.lock_obtained = False
-        self.redis = get_redis_connection(
-            redis_url,
-            redis_sentinels,
-            redis_cluster=redis_cluster,
-            decode_responses=True,
-        )
 
-    def aquire_lock(self):
+    async def acquire(self) -> bool:
         # nx=True will only set this key if it _hasn't_ already been set
-        self.lock_obtained = self.redis.set(self.lock_name, self.lock_id, nx=True, ex=self.timeout_secs)
-        return self.lock_obtained
+        return bool(await self.redis.set(self.lock_name, self.lock_id, nx=True, ex=self.timeout_secs))
 
-    def renew_lock(self):
+    async def renew(self) -> bool:
         # xx=True will only set this key if it _has_ already been set
-        return self.redis.set(self.lock_name, self.lock_id, xx=True, ex=self.timeout_secs)
+        return bool(await self.redis.set(self.lock_name, self.lock_id, xx=True, ex=self.timeout_secs))
 
-    def release_lock(self):
-        lock_value = self.redis.get(self.lock_name)
+    async def release(self):
+        lock_value = await self.redis.get(self.lock_name)
         if lock_value and lock_value == self.lock_id:
-            self.redis.delete(self.lock_name)
+            await self.redis.delete(self.lock_name)
 
 
-class RedisDict:
-    def __init__(self, name, redis_url, redis_sentinels=[], redis_cluster=False):
+class AsyncNoopLock:
+    """Single-node twin of AsyncRedisLock: always succeeds, holds no state."""
+
+    async def acquire(self) -> bool:
+        return True
+
+    async def renew(self) -> bool:
+        return True
+
+    async def release(self):
+        pass
+
+
+class AsyncRedisDict:
+    """Async dict-like store over a single Redis hash. All methods are coroutines."""
+
+    def __init__(self, name, redis):
         self.name = name
+        self.redis = redis
+
+    async def get(self, key, default=None):
+        value = await self.redis.hget(self.name, key)
+        return default if value is None else json.loads(value)
+
+    async def set(self, key, value):
+        await self.redis.hset(self.name, key, json.dumps(value))
+
+    async def delete(self, key) -> bool:
+        return bool(await self.redis.hdel(self.name, key))
+
+    async def contains(self, key) -> bool:
+        return bool(await self.redis.hexists(self.name, key))
+
+    async def keys(self) -> list:
+        return list(await self.redis.hkeys(self.name))
+
+    async def items(self) -> list:
+        return [(k, json.loads(v)) for k, v in (await self.redis.hgetall(self.name)).items()]
+
+    async def mget(self, keys: list) -> dict:
+        """Batch fetch — a single HMGET round trip; missing keys are omitted."""
+        if not keys:
+            return {}
+        values = await self.redis.hmget(self.name, keys)
+        return {k: json.loads(v) for k, v in zip(keys, values) if v is not None}
+
+    async def clear(self):
+        await self.redis.delete(self.name)
+
+
+class AsyncInMemoryDict:
+    """Single-node twin of AsyncRedisDict backed by a plain dict."""
+
+    def __init__(self):
+        self._data = {}
+
+    async def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    async def set(self, key, value):
+        self._data[key] = value
+
+    async def delete(self, key) -> bool:
+        return self._data.pop(key, None) is not None
+
+    async def contains(self, key) -> bool:
+        return key in self._data
+
+    async def keys(self) -> list:
+        return list(self._data.keys())
+
+    async def items(self) -> list:
+        return list(self._data.items())
+
+    async def mget(self, keys: list) -> dict:
+        return {k: self._data[k] for k in keys if k in self._data}
+
+    async def clear(self):
+        self._data.clear()
+
+
+class LocalCachedRedisDict:
+    """Redis-backed dict with a per-process read replica.
+
+    Reads use the plain sync dict interface served entirely from process
+    memory, so hot read paths (`in`, `[]`, `**`-unpacking) never touch Redis
+    or block the event loop. Writes go through async `set()` on the shared
+    async Redis client, and `periodic_refresh()` keeps the replica in sync
+    with writes from other pods (eventually consistent, one refresh interval
+    of lag at most).
+    """
+
+    REFRESH_INTERVAL = 5  # seconds between replica refreshes from Redis
+
+    def __init__(self, name, redis):
+        self.name = name
+        self.redis = redis
+        self._local: dict = {}
         # Per-process cache of the last payload fingerprint written by set().
         # Used to skip redundant HSET round-trips when the model list hasn't
         # changed — the dominant Redis write source on busy multi-pod setups.
         self._last_signature: str | None = None
-        self.redis = get_redis_connection(
-            redis_url,
-            redis_sentinels,
-            redis_cluster=redis_cluster,
-            decode_responses=True,
-        )
-
-    def __setitem__(self, key, value):
-        serialized_value = json.dumps(value)
-        self.redis.hset(self.name, key, serialized_value)
 
     def __getitem__(self, key):
-        value = self.redis.hget(self.name, key)
-        if value is None:
-            raise KeyError(key)
-        return json.loads(value)
-
-    def __delitem__(self, key):
-        result = self.redis.hdel(self.name, key)
-        if result == 0:
-            raise KeyError(key)
+        return self._local[key]
 
     def __contains__(self, key):
-        return self.redis.hexists(self.name, key)
+        return key in self._local
 
     def __len__(self):
-        return self.redis.hlen(self.name)
+        return len(self._local)
+
+    def __iter__(self):
+        return iter(self._local)
+
+    def get(self, key, default=None):
+        return self._local.get(key, default)
 
     def keys(self):
-        return self.redis.hkeys(self.name)
+        return self._local.keys()
 
     def values(self):
-        return [json.loads(v) for v in self.redis.hvals(self.name)]
+        return self._local.values()
 
     def items(self):
-        return [(k, json.loads(v)) for k, v in self.redis.hgetall(self.name).items()]
+        return self._local.items()
 
-    def set(self, mapping: dict):
+    async def set(self, mapping: dict):
+        # The local replica is updated first so this pod reads fresh data
+        # immediately, even if the Redis write below fails.
+        self._local = dict(mapping)
+
         if not mapping:
-            self.redis.delete(self.name)
+            await self.redis.delete(self.name)
             self._last_signature = None
             return
 
@@ -113,40 +193,31 @@ class RedisDict:
 
         # Fetch existing keys before writing so we know which ones to remove.
         # HKEYS is cheap — it transfers only short key strings, not large JSON values.
-        existing_keys = set(self.redis.hkeys(self.name))
-        new_keys = set(mapping.keys())
-        keys_to_remove = existing_keys - new_keys
+        existing_keys = set(await self.redis.hkeys(self.name))
+        keys_to_remove = existing_keys - set(mapping.keys())
 
         # HSET first (add/update all new values), then HDEL (remove stale keys).
         # We never DELETE the whole hash — this eliminates the race window
         # where concurrent readers would see an empty models dict.
-        self.redis.hset(self.name, mapping=serialized)
+        await self.redis.hset(self.name, mapping=serialized)
         if keys_to_remove:
-            self.redis.hdel(self.name, *keys_to_remove)
+            await self.redis.hdel(self.name, *keys_to_remove)
 
         self._last_signature = signature
 
-    def get(self, key, default=None):
-        try:
-            return self[key]
-        except KeyError:
-            return default
+    async def refresh(self):
+        raw = await self.redis.hgetall(self.name)
+        self._local = {k: json.loads(v) for k, v in raw.items()}
 
-    def clear(self):
-        self.redis.delete(self.name)
-        self._last_signature = None
-
-    def update(self, other=None, **kwargs):
-        if other is not None:
-            for k, v in other.items() if hasattr(other, 'items') else other:
-                self[k] = v
-        for k, v in kwargs.items():
-            self[k] = v
-
-    def setdefault(self, key, default=None):
-        if key not in self:
-            self[key] = default
-        return self[key]
+    async def periodic_refresh(self):
+        while True:
+            # Refresh-first so a freshly started pod serves models cached by
+            # its peers before its own get_all_models() run completes.
+            try:
+                await self.refresh()
+            except Exception:
+                log.exception(f'Failed to refresh local replica of {self.name} from Redis')
+            await asyncio.sleep(self.REFRESH_INTERVAL)
 
 
 class YdocManager:

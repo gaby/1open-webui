@@ -184,6 +184,7 @@ from open_webui.socket.main import (
 from open_webui.socket.main import (
     app as socket_app,
 )
+from open_webui.socket.utils import LocalCachedRedisDict
 from open_webui.tasks import (
     cleanup_task,
     create_task,
@@ -347,6 +348,9 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(periodic_usage_pool_cleanup())
     asyncio.create_task(periodic_session_pool_cleanup())
+
+    if isinstance(MODELS, LocalCachedRedisDict):
+        asyncio.create_task(MODELS.periodic_refresh())
 
     from open_webui.utils.automations import scheduler_worker_loop
 
@@ -1783,7 +1787,7 @@ async def list_tasks_endpoint(request: Request, user=Depends(get_admin_user)):
 async def list_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=Depends(get_verified_user)):
     if chat_id.startswith('local:') or chat_id.startswith('channel:'):
         socket_id = chat_id[len('local:') :]
-        owner_id = get_user_id_from_session_pool(socket_id)
+        owner_id = await get_user_id_from_session_pool(socket_id)
         if owner_id != user.id and user.role != 'admin':
             return {'task_ids': []}
     else:
@@ -1801,7 +1805,7 @@ async def list_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
 async def stop_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=Depends(get_verified_user)):
     if chat_id.startswith('local:') or chat_id.startswith('channel:'):
         socket_id = chat_id[len('local:') :]
-        owner_id = get_user_id_from_session_pool(socket_id)
+        owner_id = await get_user_id_from_session_pool(socket_id)
         if owner_id != user.id and user.role != 'admin':
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
     else:
@@ -2205,7 +2209,7 @@ async def get_current_usage(user=Depends(get_verified_user)):
             )
 
         return {
-            'model_ids': get_models_in_use(),
+            'model_ids': await get_models_in_use(),
             'user_count': await Users.get_active_user_count(),
         }
     except HTTPException:

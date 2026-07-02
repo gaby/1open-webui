@@ -18,7 +18,7 @@ from open_webui.models.groups import Groups
 from open_webui.models.models import Models
 from open_webui.models.users import UserModel
 from open_webui.routers import ollama, openai
-from open_webui.socket.utils import RedisDict
+from open_webui.socket.utils import LocalCachedRedisDict
 from open_webui.utils.access_control import has_access, has_base_model_access
 from open_webui.utils.plugin import (
     get_functions_cache,
@@ -371,9 +371,9 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
     log.debug(f'get_all_models() returned {len(models)} models')
 
     models_dict = {model['id']: model for model in models}
-    if isinstance(request.app.state.MODELS, RedisDict):
+    if isinstance(request.app.state.MODELS, LocalCachedRedisDict):
         try:
-            request.app.state.MODELS.set(models_dict)
+            await request.app.state.MODELS.set(models_dict)
         except Exception as e:
             log.warning(f'Failed to update Redis model cache, using in-process cache: {e}')
             request.app.state.MODELS = models_dict
