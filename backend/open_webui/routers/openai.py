@@ -30,6 +30,7 @@ from open_webui.env import (
     BYPASS_MODEL_ACCESS_CONTROL,
     ENABLE_FORWARD_USER_INFO_HEADERS,
     ENABLE_OPENAI_API_PASSTHROUGH,
+    ENABLE_OPENAI_API_PASSTHROUGH_ACCESS_CONTROL,
     FORWARD_SESSION_INFO_HEADER_CHAT_ID,
     MODELS_CACHE_TTL,
 )
@@ -1676,6 +1677,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
     """
     Deprecated: proxy all requests to OpenAI API.
     Disabled by default. Set ENABLE_OPENAI_API_PASSTHROUGH=True to enable.
+    Set ENABLE_OPENAI_API_PASSTHROUGH_ACCESS_CONTROL=True to enforce model access grants.
     """
 
     if not ENABLE_OPENAI_API_PASSTHROUGH:
@@ -1698,6 +1700,11 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
     idx = 0
     model_id = payload.get('model') if isinstance(payload, dict) else None
     if model_id:
+        # Only covers models named in the JSON body, not in the URL path or form fields.
+        if ENABLE_OPENAI_API_PASSTHROUGH_ACCESS_CONTROL:
+            model_info = await Models.get_model_by_id(model_id)
+            await check_model_access(user, model_info, BYPASS_MODEL_ACCESS_CONTROL)
+
         models = request.app.state.OPENAI_MODELS
         if not models or model_id not in models:
             await get_all_models(request, user=user)

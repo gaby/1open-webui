@@ -805,6 +805,13 @@ BYPASS_PYDUB_PREPROCESSING = os.getenv('BYPASS_PYDUB_PREPROCESSING', 'False').lo
 # compatible APIs for endpoints not natively handled by Open WebUI.
 ENABLE_OPENAI_API_PASSTHROUGH = os.getenv('ENABLE_OPENAI_API_PASSTHROUGH', 'False').lower() == 'true'
 
+# When enabled, passthrough requests naming a model in a JSON body are checked
+# against workspace model access grants. Disabled by default: enforcing it limits
+# non-admin users to registered models, rejecting raw provider models with 403.
+ENABLE_OPENAI_API_PASSTHROUGH_ACCESS_CONTROL = (
+    os.getenv('ENABLE_OPENAI_API_PASSTHROUGH_ACCESS_CONTROL', 'False').lower() == 'true'
+)
+
 WEBUI_AUTH_SIGNOUT_REDIRECT_URL = os.getenv('WEBUI_AUTH_SIGNOUT_REDIRECT_URL', None)
 
 ####################################
