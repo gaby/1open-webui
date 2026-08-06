@@ -51,11 +51,12 @@ c-ares cannot resolve, so these keep working. To change that, set
 `threaded` is the resolver Open WebUI used before `aiodns` was added, so it is the
 setting to reach for when an upgrade breaks name resolution that previously worked.
 
-Note that a fallback costs one c-ares timeout the first time a name is looked up. The
-result is remembered for `AIOHTTP_POOL_DNS_TTL` seconds (default 300), so later
-requests to the same host go straight to `getaddrinfo`. If every outbound hostname in
-your deployment needs the fallback, set `AIOHTTP_CLIENT_RESOLVER=threaded` to skip
-c-ares entirely.
+Note that a fallback costs one c-ares timeout the first time a name is looked up.
+After that the name stays on `getaddrinfo` for as long as it keeps being used, and is
+only reconsidered once it has gone `AIOHTTP_POOL_DNS_TTL` seconds (default 300)
+without a request. A host you talk to regularly therefore pays that timeout once per
+restart, not once per TTL. If every outbound hostname in your deployment needs the
+fallback, set `AIOHTTP_CLIENT_RESOLVER=threaded` to skip c-ares entirely.
 
 ### General Connection Errors
 

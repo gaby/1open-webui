@@ -29,8 +29,10 @@ import asyncio
 import logging
 import socket
 import time
+from collections import OrderedDict
 from typing import Any
 
+import aiohttp
 import aiohttp.connector
 import aiohttp.resolver
 from aiohttp.abc import AbstractResolver, ResolveResult
@@ -42,11 +44,28 @@ log = logging.getLogger(__name__)
 # True when aiodns is importable, i.e. when aiohttp would default to c-ares.
 AIODNS_AVAILABLE: bool = aiohttp.resolver.aiodns_default
 
-# Names that needed the getaddrinfo fallback, mapped to a monotonic expiry.
-# Shared across resolver instances: aiohttp builds one resolver per connector,
-# and the whole point is to not re-pay the c-ares timeout on every request.
-_FALLBACK_HOSTS: dict[str, float] = {}
-_FALLBACK_TTL = max(AIOHTTP_POOL_DNS_TTL, 60)
+# What counts as "c-ares could not resolve this, try the OS instead".
+# AsyncResolver.resolve() converts the DNSError out of getaddrinfo() into an
+# OSError, but not the one out of the getnameinfo() call it makes for
+# link-local IPv6, so the c-ares errors have to be caught in their own right.
+_RESOLVE_ERRORS: tuple[type[BaseException], ...] = (OSError,)
+if AIODNS_AVAILABLE:
+    import aiodns.error
+    import pycares
+
+    _RESOLVE_ERRORS = (OSError, aiodns.error.DNSError, pycares.AresError)
+
+# Names that needed the getaddrinfo fallback, mapped to a monotonic expiry, in
+# least-recently-used order.  Shared across resolver instances: aiohttp builds
+# one resolver per connector, and the whole point is to not re-pay the c-ares
+# timeout on every request.
+#
+# The entry is re-stamped on every hit, so a host stays on getaddrinfo for as
+# long as it keeps being used and only ages out after a full TTL of no traffic.
+# Expiring an in-use entry would put a c-ares timeout back in front of a user
+# request once per TTL, forever, which is the cost this map exists to avoid.
+_FALLBACK_HOSTS: OrderedDict[str, float] = OrderedDict()
+_FALLBACK_TTL = AIOHTTP_POOL_DNS_TTL
 _FALLBACK_MAX_HOSTS = 1024
 
 
@@ -58,10 +77,11 @@ class FallbackResolver(AbstractResolver):
     about Docker's embedded DNS, mDNS, NetBIOS and everything else reached
     through ``nsswitch.conf``.
 
-    A name that needed the fallback is remembered for ``AIOHTTP_POOL_DNS_TTL``
-    seconds so later lookups skip c-ares instead of paying its timeout again.
-    A name that neither resolver can resolve is *not* remembered -- a host that
-    genuinely does not exist should keep failing fast.
+    A name that needed the fallback is remembered so later lookups skip c-ares
+    instead of paying its timeout again, and stays remembered for as long as it
+    keeps being used, ageing out after ``AIOHTTP_POOL_DNS_TTL`` seconds of no
+    traffic.  A name that neither resolver can resolve is *not* remembered -- a
+    host that genuinely does not exist should keep failing fast.
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -88,17 +108,16 @@ class FallbackResolver(AbstractResolver):
 
         try:
             return await self._async_resolver().resolve(host, port, family)
-        except OSError as exc:
+        except _RESOLVE_ERRORS as exc:
             log.debug('c-ares could not resolve %r (%s), retrying with getaddrinfo', host, exc)
 
         results = await self._threaded_resolver().resolve(host, port, family)
         # Reached only when getaddrinfo succeeded where c-ares did not.
         _remember_fallback(host)
         log.info(
-            'Resolved %r via getaddrinfo after c-ares failed; using getaddrinfo for it for %ds. '
-            'Set AIOHTTP_CLIENT_RESOLVER=threaded to skip c-ares entirely.',
+            'Resolved %r via getaddrinfo after c-ares failed; keeping it on getaddrinfo while '
+            'it stays in use. Set AIOHTTP_CLIENT_RESOLVER=threaded to skip c-ares entirely.',
             host,
-            _FALLBACK_TTL,
         )
         return results
 
@@ -111,23 +130,32 @@ class FallbackResolver(AbstractResolver):
 
 
 def _needs_fallback(host: str) -> bool:
+    """Whether ``host`` is known to need ``getaddrinfo``, re-stamping it if so."""
     expiry = _FALLBACK_HOSTS.get(host)
     if expiry is None:
         return False
-    if expiry <= time.monotonic():
+    now = time.monotonic()
+    if expiry <= now:
         _FALLBACK_HOSTS.pop(host, None)
         return False
+    _FALLBACK_HOSTS[host] = now + _FALLBACK_TTL
+    _FALLBACK_HOSTS.move_to_end(host)
     return True
 
 
 def _remember_fallback(host: str) -> None:
     now = time.monotonic()
-    if len(_FALLBACK_HOSTS) >= _FALLBACK_MAX_HOSTS:
-        for stale in [h for h, expiry in _FALLBACK_HOSTS.items() if expiry <= now]:
-            del _FALLBACK_HOSTS[stale]
-        if len(_FALLBACK_HOSTS) >= _FALLBACK_MAX_HOSTS:
-            _FALLBACK_HOSTS.clear()
     _FALLBACK_HOSTS[host] = now + _FALLBACK_TTL
+    _FALLBACK_HOSTS.move_to_end(host)
+
+    for stale in [h for h, expiry in _FALLBACK_HOSTS.items() if expiry <= now]:
+        del _FALLBACK_HOSTS[stale]
+    # Evict least-recently-used rather than clearing: the names reaching this
+    # map include user-supplied ones (the SSRF-safe resolver runs its global-IP
+    # check on the result, i.e. after the name is recorded), so a flood of junk
+    # hostnames must not be able to drop the entries doing real work.
+    while len(_FALLBACK_HOSTS) > _FALLBACK_MAX_HOSTS:
+        _FALLBACK_HOSTS.popitem(last=False)
 
 
 def get_resolver_class() -> type[AbstractResolver]:
@@ -163,12 +191,15 @@ def install() -> None:
     """Make ``DEFAULT_RESOLVER_CLASS`` the default for every aiohttp connector.
 
     ``TCPConnector`` reads ``DefaultResolver`` from ``aiohttp.connector``'s own
-    namespace at construction time, so that binding is the one that matters;
-    ``aiohttp.resolver`` is patched too for anything reading it directly.  Call
+    namespace at construction time, so that binding is the one that matters.
+    ``aiohttp.resolver`` and the ``aiohttp.DefaultResolver`` alias re-exported
+    from ``aiohttp/__init__.py`` are patched too, so code reaching for either of
+    those gets the configured resolver rather than aiohttp's own default.  Call
     this before the first connector is built.
     """
     aiohttp.resolver.DefaultResolver = DEFAULT_RESOLVER_CLASS
     aiohttp.connector.DefaultResolver = DEFAULT_RESOLVER_CLASS
+    aiohttp.DefaultResolver = DEFAULT_RESOLVER_CLASS
     log.info(
         'aiohttp DNS resolver: %s (AIOHTTP_CLIENT_RESOLVER=%s, aiodns %s)',
         DEFAULT_RESOLVER_CLASS.__name__,
