@@ -12,6 +12,7 @@ import requests
 from langchain_core.documents import Document
 from open_webui.env import AIOHTTP_CLIENT_SESSION_SSL, ENABLE_FORWARD_USER_INFO_HEADERS, GLOBAL_LOG_LEVEL
 from open_webui.utils.headers import include_user_info_headers
+from open_webui.utils.resolver import make_resolver
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -477,7 +478,7 @@ class MistralLoader:
             keepalive_timeout=60,  # Increased keepalive for connection reuse
             enable_cleanup_closed=True,
             force_close=False,  # Allow connection reuse
-            resolver=aiohttp.AsyncResolver(),  # Use async DNS resolver
+            resolver=make_resolver(),  # Honour AIOHTTP_CLIENT_RESOLVER
         )
 
         timeout = aiohttp.ClientTimeout(

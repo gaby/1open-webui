@@ -20,7 +20,6 @@ from typing import (
 )
 
 import aiohttp
-import aiohttp.resolver
 import certifi
 import urllib3.connection
 import urllib3.connectionpool
@@ -60,6 +59,7 @@ from open_webui.retrieval.loaders.microsoft_web_iq import MicrosoftWebIQLoader
 from open_webui.retrieval.loaders.tavily import TavilyLoader
 from open_webui.retrieval.web.firecrawl import scrape_firecrawl_url
 from open_webui.utils.misc import is_host_allowed
+from open_webui.utils.resolver import DEFAULT_RESOLVER_CLASS
 
 log = logging.getLogger(__name__)
 
@@ -228,7 +228,7 @@ class _SSRFSafeAdapter(HTTPAdapter):
         }
 
 
-class _SSRFSafeResolver(aiohttp.resolver.DefaultResolver):
+class _SSRFSafeResolver(DEFAULT_RESOLVER_CLASS):
     """aiohttp resolver that rejects non-global IPs unless local fetch is on."""
 
     async def resolve(self, host, port=0, family=socket.AF_INET):

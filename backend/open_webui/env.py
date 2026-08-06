@@ -687,6 +687,17 @@ try:
 except ValueError:
     AIOHTTP_POOL_DNS_TTL = 300
 
+# Which DNS resolver aiohttp uses.  Installing aiodns silently switches aiohttp
+# from getaddrinfo to c-ares, which does not implement the platform name-service
+# stack (nsswitch.conf, mDNS, NetBIOS, the Windows resolver).  See
+# open_webui.utils.resolver for what each mode does.
+#   auto     - c-ares, falling back to getaddrinfo for names c-ares cannot resolve
+#   aiodns   - c-ares only
+#   threaded - getaddrinfo only
+AIOHTTP_CLIENT_RESOLVER = os.getenv('AIOHTTP_CLIENT_RESOLVER', 'auto').strip().lower()
+if AIOHTTP_CLIENT_RESOLVER not in ('auto', 'aiodns', 'threaded'):
+    AIOHTTP_CLIENT_RESOLVER = 'auto'
+
 RAG_EMBEDDING_TIMEOUT = os.getenv('RAG_EMBEDDING_TIMEOUT', '')
 
 if RAG_EMBEDDING_TIMEOUT == '':

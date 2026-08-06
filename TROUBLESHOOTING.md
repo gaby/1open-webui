@@ -22,6 +22,41 @@ docker run -d --network=host -v open-webui:/app/backend/data -e OLLAMA_BASE_URL=
 
 Open WebUI has a default timeout of 5 minutes for Ollama to finish generating the response. If needed, this can be adjusted via the environment variable AIOHTTP_CLIENT_TIMEOUT, which sets the timeout in seconds.
 
+### DNS Resolution Errors ("Could not contact DNS servers", "DNS lookup failed")
+
+Open WebUI ships the `aiodns` package, which makes `aiohttp` resolve hostnames with
+c-ares on the event loop instead of calling `getaddrinfo` on a worker thread. That
+keeps DNS lookups from queueing behind other blocking work, but c-ares only reads
+`/etc/resolv.conf` and the hosts file — it does not use the platform name-service
+stack (`nsswitch.conf`, mDNS/`.local`, NetBIOS, the Windows resolver).
+
+Names that only the operating system knows how to resolve can therefore fail, most
+commonly:
+
+- Docker Compose service names resolved by Docker's embedded DNS server at `127.0.0.11`
+  (for example an `ollama`, `vllm`, or `pipelines` container on the same network)
+- hosts behind a DNS64/NAT64 translator
+- `.local` and other mDNS/NetBIOS names
+
+By default Open WebUI tries c-ares first and falls back to `getaddrinfo` for any name
+c-ares cannot resolve, so these keep working. To change that, set
+`AIOHTTP_CLIENT_RESOLVER`:
+
+| Value      | Behavior                                                                 |
+| ---------- | ------------------------------------------------------------------------ |
+| `auto`     | Default. c-ares first, falling back to `getaddrinfo` when it fails.       |
+| `aiodns`   | c-ares only. Fastest, but the names above will not resolve.               |
+| `threaded` | `getaddrinfo` only. Use this if DNS is still misbehaving in your network. |
+
+`threaded` is the resolver Open WebUI used before `aiodns` was added, so it is the
+setting to reach for when an upgrade breaks name resolution that previously worked.
+
+Note that a fallback costs one c-ares timeout the first time a name is looked up. The
+result is remembered for `AIOHTTP_POOL_DNS_TTL` seconds (default 300), so later
+requests to the same host go straight to `getaddrinfo`. If every outbound hostname in
+your deployment needs the fallback, set `AIOHTTP_CLIENT_RESOLVER=threaded` to skip
+c-ares entirely.
+
 ### General Connection Errors
 
 **Ensure Ollama Version is Up-to-Date**: Always start by checking that you have the latest version of Ollama. Visit [Ollama's official site](https://ollama.com/) for the latest updates.

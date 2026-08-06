@@ -35,6 +35,11 @@ from open_webui.env import (
     AIOHTTP_POOL_DNS_TTL,
 )
 
+# Imported for its side effect: points aiohttp's DefaultResolver at the resolver
+# AIOHTTP_CLIENT_RESOLVER selects, for this pool and for every ad-hoc
+# ClientSession built elsewhere in the app.
+import open_webui.utils.resolver  # noqa: F401  isort: skip
+
 log = logging.getLogger(__name__)
 
 _session: Optional[aiohttp.ClientSession] = None
