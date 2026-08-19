@@ -98,7 +98,9 @@ async def embed_knowledge_base_metadata(
     """Generate and store embedding for knowledge base."""
     try:
         content = f'{name}\n\n{description}' if description else name
-        embedding = await request.app.state.EMBEDDING_FUNCTION(content, prefix=RAG_EMBEDDING_CONTENT_PREFIX)
+        embedding = await request.app.state.EMBEDDING_FUNCTION(
+            content, prefix=RAG_EMBEDDING_CONTENT_PREFIX, request=request
+        )
         await ASYNC_VECTOR_DB_CLIENT.upsert(
             collection_name=KNOWLEDGE_BASES_COLLECTION,
             items=[

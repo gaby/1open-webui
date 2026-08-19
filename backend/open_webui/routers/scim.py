@@ -234,6 +234,10 @@ def get_scim_auth(request: Request, authorization: Optional[str] = Header(None))
     Verify SCIM authentication
     Checks for SCIM-specific bearer token configured in the system
     """
+    # Named before it is verified, and upgraded below once it is: a rejected call
+    # never reaches the stamp at the end.
+    request.state.audit_actor = {'auth_type': 'scim_token', 'verified': False}
+
     if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -274,6 +278,8 @@ def get_scim_auth(request: Request, authorization: Optional[str] = Header(None))
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail='Invalid SCIM token',
             )
+
+        request.state.audit_actor = {'auth_type': 'scim_token', 'verified': True}
 
         return True
     except HTTPException:

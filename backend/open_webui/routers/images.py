@@ -31,6 +31,7 @@ from open_webui.models.config import Config
 from open_webui.retrieval.web.utils import get_ssrf_safe_session, validate_url
 from open_webui.routers.files import get_file_content_by_id, upload_file_handler
 from open_webui.utils.access_control import has_permission
+from open_webui.utils.audit import record_audit_usage
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.utils.images.comfyui import (
@@ -657,6 +658,9 @@ async def image_generations(
                 r.raise_for_status()
                 res = await r.json(content_type=None)
 
+            if isinstance(res, dict):
+                record_audit_usage(request, res.get('usage'), model=model)
+
             images = []
 
             for image in res['data']:
@@ -1028,6 +1032,9 @@ async def image_edits(
             ) as r:
                 r.raise_for_status()
                 res = await r.json(content_type=None)
+
+            if isinstance(res, dict):
+                record_audit_usage(request, res.get('usage'), model=model)
 
             images = []
             for image in res['data']:

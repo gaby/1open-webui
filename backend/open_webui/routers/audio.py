@@ -50,6 +50,7 @@ from open_webui.env import (
 from open_webui.events import EVENTS, publish_event
 from open_webui.models.config import Config
 from open_webui.utils.access_control import has_permission
+from open_webui.utils.audit import record_audit_usage
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.utils.json_codec import JSONCodec
@@ -700,6 +701,8 @@ async def _transcribe_openai(request, file_path, filename, languages, file_dir, 
         r.raise_for_status()
         data = await r.json()
 
+        record_audit_usage(request, data.get('usage') if isinstance(data, dict) else None, model=payload.get('model'))
+
         async with aiofiles.open(os.path.join(file_dir, f'{id}.json'), 'w') as f:
             await f.write(JSONCodec.dumps(data))
         return data
@@ -1008,6 +1011,8 @@ async def _transcribe_mistral(request, file_path, filename, metadata, file_dir, 
             r.raise_for_status()
             response = await r.json()
 
+            record_audit_usage(request, response.get('usage'), model=model)
+
             transcript = response.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
             if not transcript:
                 raise ValueError('Empty transcript in response')
@@ -1040,6 +1045,8 @@ async def _transcribe_mistral(request, file_path, filename, metadata, file_dir, 
             )
             r.raise_for_status()
             response = await r.json()
+
+            record_audit_usage(request, response.get('usage'), model=model)
 
             transcript = response.get('text', '').strip()
             if not transcript:

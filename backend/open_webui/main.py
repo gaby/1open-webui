@@ -233,7 +233,7 @@ from open_webui.utils.chat_variables import (
 from open_webui.utils.embeddings import generate_embeddings
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.json_response import apply_orjson_http_json
-from open_webui.utils.logger import start_logger
+from open_webui.utils.logger import start_logger, stop_logger
 from open_webui.utils.middleware import (
     background_tasks_handler,
     build_chat_response_context,
@@ -460,23 +460,26 @@ async def lifespan(app: FastAPI):
     app.state.startup_complete = True
     await publish_event(app, EVENTS.SYSTEM_STARTUP_COMPLETED, source='system')
 
-    yield
+    # `yield` inside the `try` so the drain still runs on an exceptional exit.
+    try:
+        yield
 
-    await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_STARTED, source='system')
+        await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_STARTED, source='system')
 
-    # Shutdown: clean up shared resources
-    from open_webui.utils.session_pool import close_session
+        from open_webui.utils.session_pool import close_session
 
-    await close_session()
+        await close_session()
 
-    if hasattr(app.state, 'redis_task_command_listener'):
-        app.state.redis_task_command_listener.cancel()
+        if hasattr(app.state, 'redis_task_command_listener'):
+            app.state.redis_task_command_listener.cancel()
 
-    app.state.periodic_usage_pool_cleanup.cancel()
-    app.state.periodic_session_pool_cleanup.cancel()
-    app.state.scheduler_worker_loop.cancel()
+        app.state.periodic_usage_pool_cleanup.cancel()
+        app.state.periodic_session_pool_cleanup.cancel()
+        app.state.scheduler_worker_loop.cancel()
 
-    await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_COMPLETED, source='system')
+        await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_COMPLETED, source='system')
+    finally:
+        await stop_logger()
 
 
 # Opt-in (ENABLE_ORJSON): orjson for request-body parsing and JSONResponse bodies;

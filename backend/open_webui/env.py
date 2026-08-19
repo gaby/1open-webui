@@ -1234,6 +1234,33 @@ AUDIT_INCLUDED_PATHS = [
 # When enabled, GET requests are also audited (disabled by default to avoid log noise)
 ENABLE_AUDIT_GET_REQUESTS = os.getenv('ENABLE_AUDIT_GET_REQUESTS', 'False').lower() == 'true'
 
+# Treat the audit trail as a hard requirement: abort startup if the sink cannot
+# be opened, raise write errors instead of swallowing them, and audit
+# credential-less requests. A dropped record always reaches stderr regardless.
+AUDIT_LOG_STRICT = os.getenv('AUDIT_LOG_STRICT', 'False').lower() == 'true'
+
+# Write audit records on Loguru's background thread rather than the event loop.
+# Ignored under AUDIT_LOG_STRICT: Loguru's queued writer swallows sink errors,
+# so an enqueued sink cannot report a failed write.
+AUDIT_LOG_ENQUEUE = os.getenv('AUDIT_LOG_ENQUEUE', str(not AUDIT_LOG_STRICT)).lower() == 'true'
+
+# Retention for rotated audit files, e.g. "30 days" or "10" (files kept).
+# Unset keeps them forever. A digit-only value is converted to int: Loguru reads
+# a file count only from an int and raises on the string form.
+AUDIT_LOG_FILE_RETENTION = os.getenv('AUDIT_LOG_FILE_RETENTION', '').strip() or None
+if AUDIT_LOG_FILE_RETENTION and AUDIT_LOG_FILE_RETENTION.isdigit():
+    AUDIT_LOG_FILE_RETENTION = int(AUDIT_LOG_FILE_RETENTION)
+
+# Audit requests carrying no credentials — the anonymous and rejected access
+# attempts an audit trail is usually asked about.
+ENABLE_AUDIT_UNAUTHENTICATED_REQUESTS = (
+    os.getenv('ENABLE_AUDIT_UNAUTHENTICATED_REQUESTS', str(AUDIT_LOG_STRICT)).lower() == 'true'
+)
+
+# Include the model token/cost `usage` object in audit records when the request
+# produced one (chat completions and friends).
+ENABLE_AUDIT_USAGE = os.getenv('ENABLE_AUDIT_USAGE', 'True').lower() == 'true'
+
 
 ####################################
 # OPENTELEMETRY

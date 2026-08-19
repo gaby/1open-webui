@@ -50,6 +50,7 @@ from open_webui.retrieval.vector.main import GetResult, SearchResult
 from open_webui.retrieval.web.utils import get_web_loader
 from open_webui.utils.access_control.files import get_owner_accessible_folder_files, has_access_to_file
 from open_webui.utils.access_control.folders import has_folder_access
+from open_webui.utils.audit import record_audit_usage
 from open_webui.utils.headers import get_json_bearer_headers, include_user_info_headers
 from open_webui.utils.misc import get_content_from_message, get_message_list
 
@@ -916,6 +917,7 @@ async def agenerate_openai_batch_embeddings(
     key: str = '',
     prefix: str = None,
     user: UserModel = None,
+    request=None,
 ) -> list[list[float]]:
     log.debug('agenerate_openai_batch_embeddings:model %s batch size: %s', model, len(texts))
     form_data = {'input': texts, 'model': model}
@@ -938,6 +940,8 @@ async def agenerate_openai_batch_embeddings(
             r.raise_for_status()
             data = await r.json()
             if 'data' in data:
+                if request is not None:
+                    record_audit_usage(request, data.get('usage'), model=model)
                 return [item['embedding'] for item in data['data']]
             else:
                 raise ValueError("Unexpected OpenAI embeddings response: missing 'data' key")
@@ -993,6 +997,7 @@ async def agenerate_azure_openai_batch_embeddings(
     version: str = '',
     prefix: str = None,
     user: UserModel = None,
+    request=None,
 ) -> list[list[float]]:
     log.debug('agenerate_azure_openai_batch_embeddings:deployment %s batch size: %s', model, len(texts))
     form_data = {'input': texts}
@@ -1020,6 +1025,8 @@ async def agenerate_azure_openai_batch_embeddings(
             r.raise_for_status()
             data = await r.json()
             if 'data' in data:
+                if request is not None:
+                    record_audit_usage(request, data.get('usage'), model=model)
                 return [item['embedding'] for item in data['data']]
             else:
                 raise ValueError("Unexpected Azure OpenAI embeddings response: missing 'data' key")
@@ -1065,6 +1072,7 @@ async def agenerate_ollama_batch_embeddings(
     key: str = '',
     prefix: str = None,
     user: UserModel = None,
+    request=None,
 ) -> list[list[float]]:
     log.debug('agenerate_ollama_batch_embeddings:model %s batch size: %s', model, len(texts))
     form_data = {'input': texts, 'model': model, 'truncate': True}
@@ -1090,6 +1098,12 @@ async def agenerate_ollama_batch_embeddings(
                 raise Exception(f'Ollama embed error ({r.status}): {error_detail}')
             data = await r.json()
             if 'embeddings' in data:
+                if request is not None:
+                    record_audit_usage(
+                        request,
+                        {key: data[key] for key in ('prompt_eval_count', 'eval_count') if key in data},
+                        model=model,
+                    )
                 return data['embeddings']
             else:
                 raise ValueError("Unexpected Ollama embeddings response: missing 'embeddings' key")
@@ -1108,7 +1122,8 @@ def get_embedding_function(
 ) -> Awaitable:
     if embedding_engine == '':
         # Sentence transformers: CPU-bound sync operation
-        async def async_embedding_function(query, prefix=None, user=None):
+        async def async_embedding_function(query, prefix=None, user=None, request=None):
+            # `request` is accepted and ignored: a local model bills nothing.
             # Deferred so a missing local model degrades RAG instead of crashing boot.
             if embedding_function is None:
                 raise ValueError(
@@ -1130,7 +1145,7 @@ def get_embedding_function(
 
         return async_embedding_function
     elif embedding_engine in ['ollama', 'openai', 'azure_openai']:
-        embedding_function = lambda query, prefix=None, user=None: generate_embeddings(
+        embedding_function = lambda query, prefix=None, user=None, request=None: generate_embeddings(
             engine=embedding_engine,
             model=embedding_model,
             text=query,
@@ -1139,9 +1154,10 @@ def get_embedding_function(
             key=key,
             user=user,
             azure_api_version=azure_api_version,
+            request=request,
         )
 
-        async def async_embedding_function(query, prefix=None, user=None):
+        async def async_embedding_function(query, prefix=None, user=None, request=None):
             if isinstance(query, list):
                 # Create batches
                 batches = [query[i : i + embedding_batch_size] for i in range(0, len(query), embedding_batch_size)]
@@ -1155,17 +1171,19 @@ def get_embedding_function(
 
                         async def generate_batch_with_semaphore(batch):
                             async with semaphore:
-                                return await embedding_function(batch, prefix=prefix, user=user)
+                                return await embedding_function(batch, prefix=prefix, user=user, request=request)
 
                         tasks = [generate_batch_with_semaphore(batch) for batch in batches]
                     else:
-                        tasks = [embedding_function(batch, prefix=prefix, user=user) for batch in batches]
+                        tasks = [
+                            embedding_function(batch, prefix=prefix, user=user, request=request) for batch in batches
+                        ]
                     batch_results = await asyncio.gather(*tasks)
                 else:
                     log.debug('generate_multiple_async: Processing %s batches sequentially', len(batches))
                     batch_results = []
                     for batch in batches:
-                        batch_results.append(await embedding_function(batch, prefix=prefix, user=user))
+                        batch_results.append(await embedding_function(batch, prefix=prefix, user=user, request=request))
 
                 # Flatten results — raise if any batch failed
                 embeddings = []
@@ -1181,7 +1199,7 @@ def get_embedding_function(
                 )
                 return embeddings
             else:
-                return await embedding_function(query, prefix, user)
+                return await embedding_function(query, prefix, user, request)
 
         return async_embedding_function
     else:
@@ -1198,6 +1216,7 @@ async def generate_embeddings(
     url = kwargs.get('url', '')
     key = kwargs.get('key', '')
     user = kwargs.get('user')
+    request = kwargs.get('request')
 
     if prefix is not None and RAG_EMBEDDING_PREFIX_FIELD_NAME is None:
         if isinstance(text, list):
@@ -1214,6 +1233,7 @@ async def generate_embeddings(
                 'key': key,
                 'prefix': prefix,
                 'user': user,
+                'request': request,
             }
         )
         if embeddings is None:
@@ -1221,7 +1241,7 @@ async def generate_embeddings(
         return embeddings[0] if isinstance(text, str) else embeddings
     elif engine == 'openai':
         embeddings = await agenerate_openai_batch_embeddings(
-            model, text if isinstance(text, list) else [text], url, key, prefix, user
+            model, text if isinstance(text, list) else [text], url, key, prefix, user, request
         )
         if embeddings is None:
             return None
@@ -1236,6 +1256,7 @@ async def generate_embeddings(
             azure_api_version,
             prefix,
             user,
+            request,
         )
         if embeddings is None:
             return None

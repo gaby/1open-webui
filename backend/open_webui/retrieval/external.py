@@ -86,7 +86,9 @@ def _safe_identifier(value: str, label: str) -> str:
     return value
 
 
-async def _retrieve_qdrant(connection, auth_config, knowledge, query, count, embedding_function) -> list[dict]:
+async def _retrieve_qdrant(
+    connection, auth_config, knowledge, query, count, embedding_function, request=None
+) -> list[dict]:
     try:
         from qdrant_client import QdrantClient
     except ImportError as exc:
@@ -104,7 +106,7 @@ async def _retrieve_qdrant(connection, auth_config, knowledge, query, count, emb
     source_config = _source_config(knowledge)
     vector_field = source_config.get('vector_field') or None
 
-    vector = await embedding_function(query, prefix=RAG_EMBEDDING_QUERY_PREFIX)
+    vector = await embedding_function(query, prefix=RAG_EMBEDDING_QUERY_PREFIX, request=request)
 
     def _search():
         client = QdrantClient(
@@ -133,7 +135,9 @@ async def _retrieve_qdrant(connection, auth_config, knowledge, query, count, emb
     return normalized
 
 
-async def _retrieve_milvus(connection, auth_config, knowledge, query, count, embedding_function) -> list[dict]:
+async def _retrieve_milvus(
+    connection, auth_config, knowledge, query, count, embedding_function, request=None
+) -> list[dict]:
     try:
         from pymilvus import MilvusClient
     except ImportError as exc:
@@ -153,7 +157,7 @@ async def _retrieve_milvus(connection, auth_config, knowledge, query, count, emb
     content_field = source_config.get('content_field') or 'data.text'
     metadata_field = source_config.get('metadata_field') or 'metadata'
 
-    vector = await embedding_function(query, prefix=RAG_EMBEDDING_QUERY_PREFIX)
+    vector = await embedding_function(query, prefix=RAG_EMBEDDING_QUERY_PREFIX, request=request)
 
     def _search():
         client_kwargs = {
@@ -205,7 +209,9 @@ async def _retrieve_milvus(connection, auth_config, knowledge, query, count, emb
     return normalized
 
 
-async def _retrieve_pgvector(connection, auth_config, knowledge, query, count, embedding_function) -> list[dict]:
+async def _retrieve_pgvector(
+    connection, auth_config, knowledge, query, count, embedding_function, request=None
+) -> list[dict]:
     try:
         import psycopg
         from pgvector.psycopg import register_vector
@@ -230,7 +236,7 @@ async def _retrieve_pgvector(connection, auth_config, knowledge, query, count, e
     metadata_field = source_config.get('metadata_field') or 'vmetadata'
     document_id_field = source_config.get('document_id_field') or 'id'
 
-    vector = await embedding_function(query, prefix=RAG_EMBEDDING_QUERY_PREFIX)
+    vector = await embedding_function(query, prefix=RAG_EMBEDDING_QUERY_PREFIX, request=request)
 
     def _search():
         from psycopg import sql
@@ -334,6 +340,7 @@ async def retrieve_external_knowledge_for_connection(
                     query,
                     count,
                     getattr(request.app.state, 'EMBEDDING_FUNCTION', None),
+                    request,
                 )
             )
         elif provider == 'milvus':
@@ -345,6 +352,7 @@ async def retrieve_external_knowledge_for_connection(
                     query,
                     count,
                     getattr(request.app.state, 'EMBEDDING_FUNCTION', None),
+                    request,
                 )
             )
         elif provider == 'pgvector':
@@ -356,6 +364,7 @@ async def retrieve_external_knowledge_for_connection(
                     query,
                     count,
                     getattr(request.app.state, 'EMBEDDING_FUNCTION', None),
+                    request,
                 )
             )
         else:

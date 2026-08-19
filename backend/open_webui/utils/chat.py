@@ -27,6 +27,7 @@ from open_webui.socket.main import (
     get_event_emitter,
     sio,
 )
+from open_webui.utils.audit import audit_usage_wanted, record_audit_usage
 from open_webui.utils.filter import (
     get_filter_functions,
     process_filter_functions,
@@ -148,6 +149,60 @@ async def generate_direct_chat_completion(
         return res
 
 
+def _completion_usage(response: Any) -> Optional[dict]:
+    """The usage object a finished completion carries, whatever shape it is in.
+
+    A successful non-streaming call returns the provider payload as a plain
+    dict. A provider *error* is returned rather than raised, as a `JSONResponse`
+    whose body is that same payload — and a call that failed after the model ran
+    has still been billed, so its counters are read too.
+    """
+    if isinstance(response, dict):
+        return response.get('usage')
+
+    if isinstance(response, JSONResponse) and isinstance(response.body, bytes):
+        try:
+            data = JSONCodec.loads(response.body.decode('utf-8', 'replace'))
+        except Exception:
+            return None
+        return data.get('usage') if isinstance(data, dict) else None
+
+    return None
+
+
+def _record_completion_usage(request: Request, response: Any, model: Optional[str] = None) -> Any:
+    """Attach a finished completion's usage to this request's audit trail.
+
+    Every model call this backend makes on its own account — title, tags,
+    follow-up, autocomplete, query generation, memory, context compaction —
+    arrives here, and none of them passes through the response handler in
+    `utils.middleware` that reports the user-facing chat's usage. Recording at
+    this funnel rather than at each of the four leaves below is what keeps a
+    provider added later from being missed, and `record_audit_usage`
+    accumulates, so a request that makes several of these calls is accounted for
+    all of them.
+
+    Streaming responses are left alone: their usage has not been produced yet
+    and is collected off the stream instead.
+
+    The arena branch above returns before reaching here, and its recursive call
+    reaches here itself — so the one usage object a sub-model reported is
+    recorded once, not once per level.
+
+    `model` is the model this call resolved to, which is not always the one the
+    client asked for: an arena model picks a sub-model, and by the time the
+    recursive call arrives here `form_data['model']` names the sub-model that
+    was billed while the request body and `request.state.metadata` still name
+    the arena. Passing it means the entry does not have to reconstruct the
+    answer from a response this path never scans.
+    """
+    if not audit_usage_wanted(request):
+        return response
+
+    record_audit_usage(request, _completion_usage(response), model=model)
+    return response
+
+
 async def generate_chat_completion(
     request: Request,
     form_data: dict,
@@ -196,7 +251,11 @@ async def generate_chat_completion(
         raise Exception('Model not found')
 
     if getattr(request.state, 'direct', False) and model_id == getattr(request.state, 'model', {}).get('id'):
-        return await generate_direct_chat_completion(request, form_data, user=user, models=models)
+        return _record_completion_usage(
+            request,
+            await generate_direct_chat_completion(request, form_data, user=user, models=models),
+            model=form_data.get('model'),
+        )
     else:
         # Check if user has access to the model
         if not bypass_filter and user.role == 'user':
@@ -281,8 +340,8 @@ async def generate_chat_completion(
 
         if model.get('pipe'):
             # Below does not require bypass_filter because this is the only route the uses this function and it is already bypassing the filter
-            return await generate_function_chat_completion(request, form_data, user=user, models=models)
-        if model.get('owned_by') == 'ollama':
+            response = await generate_function_chat_completion(request, form_data, user=user, models=models)
+        elif model.get('owned_by') == 'ollama':
             # Using /ollama/api/chat endpoint
             form_data = convert_payload_openai_to_ollama(form_data)
             response = await generate_ollama_chat_completion(
@@ -292,19 +351,21 @@ async def generate_chat_completion(
             )
             if form_data.get('stream'):
                 response.headers['content-type'] = 'text/event-stream'
-                return StreamingResponse(
+                response = StreamingResponse(
                     convert_streaming_response_ollama_to_openai(response),
                     headers=dict(response.headers),
                     background=response.background,
                 )
             else:
-                return convert_response_ollama_to_openai(response)
+                response = convert_response_ollama_to_openai(response)
         else:
-            return await generate_openai_chat_completion(
+            response = await generate_openai_chat_completion(
                 request=request,
                 form_data=form_data,
                 user=user,
             )
+
+        return _record_completion_usage(request, response, model=model_id)
 
 
 chat_completion = generate_chat_completion

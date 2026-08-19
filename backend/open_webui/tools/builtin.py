@@ -2563,7 +2563,9 @@ async def query_chat_files(
             queries=[query],
             embedding_function=(
                 lambda queries, prefix: (
-                    embedding_function(queries, prefix=prefix, user=user_model) if embedding_function else None
+                    embedding_function(queries, prefix=prefix, user=user_model, request=__request__)
+                    if embedding_function
+                    else None
                 )
             ),
             k=count,
@@ -3291,7 +3293,9 @@ async def query_knowledge_files(
                 __request__,
                 collection_names=collection_names,
                 queries=[query],
-                embedding_function=lambda queries, prefix: embedding_function(queries, prefix=prefix, user=user_model),
+                embedding_function=lambda queries, prefix: embedding_function(
+                    queries, prefix=prefix, user=user_model, request=__request__
+                ),
                 k=count,
             )
 
@@ -3378,7 +3382,9 @@ async def query_knowledge_bases(
         if not embedding_function:
             return JSONCodec.dumps({'error': 'Embedding function not configured'})
         user_model = UserModel(**__user__)
-        query_embedding = await embedding_function(query, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user_model)
+        query_embedding = await embedding_function(
+            query, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user_model, request=__request__
+        )
 
         # Min-heap of (distance, knowledge_base_id) - only holds top `count` results
         top_results_heap = []
