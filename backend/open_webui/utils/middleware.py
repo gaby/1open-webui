@@ -82,6 +82,13 @@ from open_webui.utils.access_control import has_connection_access, has_permissio
 from open_webui.utils.access_control.files import get_owner_accessible_folder_files
 from open_webui.utils.access_control.folders import has_folder_access
 from open_webui.utils.ask_user import stage_ask_user_tool_call
+from open_webui.utils.audit import (
+    StreamUsageCollector,
+    audit_usage_wanted,
+    extract_stream_usage,
+    extract_usage_fragment,
+    record_audit_usage,
+)
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.code_interpreter import execute_code_jupyter
@@ -2056,7 +2063,7 @@ async def chat_completion_files_handler(
                 items=files,
                 queries=queries,
                 embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
+                    query, prefix=prefix, user=user, request=request
                 ),
                 k=rag_config.get('rag.top_k'),
                 reranking_function=(
@@ -4002,6 +4009,10 @@ async def non_streaming_chat_response_handler(response, ctx):
     if response_data is None:
         return response
 
+    # Not recorded here: `generate_chat_completion` already reports every
+    # non-streaming completion, and `record_audit_usage` accumulates, so a second
+    # call would double the count.
+
     chat_id = metadata.get('chat_id') or ''
     save_to_chat = is_saved_chat_id(chat_id)
 
@@ -4548,6 +4559,10 @@ async def streaming_chat_response_handler(response, ctx):
                     output = []
 
             usage = None
+            # Fed from the raw upstream lines, before the filters can rewrite or
+            # drop them: a presentation filter may hide a cost from the client but
+            # must not erase it from the record — or fabricate one into it.
+            usage_collector = StreamUsageCollector() if audit_usage_wanted(request) else None
             last_response_id = None
 
             def full_output():
@@ -4758,6 +4773,8 @@ async def streaming_chat_response_handler(response, ctx):
 
                     async for line in response.body_iterator:
                         line = line.decode('utf-8', 'replace') if isinstance(line, bytes) else line
+                        if usage_collector is not None:
+                            usage_collector.feed(line)
                         data = line
 
                         # Skip empty lines
@@ -6168,6 +6185,7 @@ async def streaming_chat_response_handler(response, ctx):
 
                 current_output = full_output()
                 title = await Chats.get_chat_title_by_id(metadata['chat_id']) if save_to_chat else ''
+
                 data = {
                     'done': True,
                     'output': current_output,
@@ -6238,6 +6256,14 @@ async def streaming_chat_response_handler(response, ctx):
                 except (asyncio.CancelledError, Exception):
                     pass
                 raise  # re-raise CancelledError for proper propagation
+            finally:
+                # From `finally`: the provider has already billed by now, so a
+                # cancellation must not lose the cost. This request's entry is long
+                # written, so the helper emits a linked follow-up. The collector
+                # saw the provider's own numbers; `usage` is what survived the
+                # filters, and is the fallback when the collector parsed nothing.
+                collected = usage_collector.finish() if usage_collector is not None else {}
+                record_audit_usage(request, collected or usage)
 
             if response.background is not None:
                 await response.background()
@@ -6251,6 +6277,7 @@ async def streaming_chat_response_handler(response, ctx):
                 return f'data: {item}\n\n'
 
             assistant_message = {}
+            usage_collector = StreamUsageCollector() if audit_usage_wanted(request) else None
             filter_context = FilterContext()
             has_api_outlet_filters = ENABLE_API_OUTLET_FILTERS and bool(filter_functions)
             if ENABLE_API_OUTLET_FILTERS and not has_api_outlet_filters:
@@ -6276,36 +6303,50 @@ async def streaming_chat_response_handler(response, ctx):
                 if event:
                     yield wrap_item(JSONCodec.dumps(event))
 
-            async for data in original_generator:
-                if filter_functions:
-                    line = data.decode('utf-8', 'replace') if isinstance(data, bytes) else data
-                    if isinstance(line, str) and line.startswith('data:'):
-                        payload = line.removeprefix('data:').strip()
-                        if payload and payload != '[DONE]':
-                            try:
-                                event = JSONCodec.loads(payload)
-                            except JSONCodec.JSONDecodeError:
-                                event = None
+            try:
+                async for data in original_generator:
+                    if usage_collector is not None:
+                        # Before the filters below, so what the provider billed is
+                        # recorded even if a filter rewrites or drops it.
+                        usage_collector.feed(data)
 
-                            if isinstance(event, dict):
-                                event, _ = await process_filter_functions(
-                                    request=request,
-                                    filter_context=filter_context,
-                                    filter_functions=filter_functions,
-                                    filter_type='stream',
-                                    form_data=event,
-                                    extra_params=extra_params,
-                                )
-                                data = wrap_item(JSONCodec.dumps(event)) if event else None
+                    if filter_functions:
+                        line = data.decode('utf-8', 'replace') if isinstance(data, bytes) else data
+                        if isinstance(line, str) and line.startswith('data:'):
+                            payload = line.removeprefix('data:').strip()
+                            if payload and payload != '[DONE]':
+                                try:
+                                    event = JSONCodec.loads(payload)
+                                except JSONCodec.JSONDecodeError:
+                                    event = None
 
-                if data:
-                    if has_api_outlet_filters:
-                        update_assistant_message_from_stream(assistant_message, data)
-                    yield data
+                                if isinstance(event, dict):
+                                    event, _ = await process_filter_functions(
+                                        request=request,
+                                        filter_context=filter_context,
+                                        filter_functions=filter_functions,
+                                        filter_type='stream',
+                                        form_data=event,
+                                        extra_params=extra_params,
+                                    )
+                                    data = wrap_item(JSONCodec.dumps(event)) if event else None
 
-            if has_api_outlet_filters and assistant_message:
-                ctx['assistant_message'] = assistant_message
-                await outlet_filter_handler(ctx)
+                    if data:
+                        if has_api_outlet_filters:
+                            update_assistant_message_from_stream(assistant_message, data)
+                        yield data
+
+                if has_api_outlet_filters and assistant_message:
+                    ctx['assistant_message'] = assistant_message
+                    await outlet_filter_handler(ctx)
+            finally:
+                # Streams straight back to a direct API client, so usage lands on
+                # this request's own entry. From `finally` so an abandoned stream
+                # still accounts for what was billed; kept sync as the generator
+                # may be closing. The collector wins because only it survives an
+                # event split across chunks.
+                stream_usage = usage_collector.finish() if usage_collector is not None else {}
+                record_audit_usage(request, stream_usage or assistant_message.get('usage'))
 
         return StreamingResponse(
             stream_wrapper(response.body_iterator, events),

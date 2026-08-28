@@ -13,6 +13,7 @@ from open_webui.routers.ollama import (
     embed as ollama_embed,
 )
 from open_webui.routers.openai import embeddings as openai_embeddings
+from open_webui.utils.audit import record_audit_usage
 from open_webui.utils.models import check_model_access
 from open_webui.utils.payload import convert_embed_payload_openai_to_ollama
 from open_webui.utils.response import convert_embedding_response_ollama_to_openai
@@ -78,11 +79,17 @@ async def generate_embeddings(
             form_data=GenerateEmbedForm(**ollama_payload),
             user=user,
         )
+        # Before the conversion, which drops Ollama's `prompt_eval_count`.
+        if isinstance(response, dict) and response.get('prompt_eval_count') is not None:
+            record_audit_usage(request, {'prompt_eval_count': response['prompt_eval_count']}, model=model.get('id'))
         return convert_embedding_response_ollama_to_openai(response)
 
     # Default: OpenAI or compatible backend
-    return await openai_embeddings(
+    response = await openai_embeddings(
         request=request,
         form_data=form_data,
         user=user,
     )
+    if isinstance(response, dict):
+        record_audit_usage(request, response.get('usage'), model=model.get('id'))
+    return response

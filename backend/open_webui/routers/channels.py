@@ -2009,6 +2009,14 @@ async def post_webhook_message(
             detail=ERROR_MESSAGES.INVALID_URL,
         )
 
+    # The just-verified path token is this route's whole authentication.
+    request.state.audit_actor = {
+        'id': webhook.user_id,
+        'webhook_id': webhook.id,
+        'auth_type': 'channel_webhook',
+        'verified': True,
+    }
+
     channel = await Channels.get_channel_by_id(webhook.channel_id, db=db)
     if not channel:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)

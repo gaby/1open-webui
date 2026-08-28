@@ -7,8 +7,11 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from open_webui.env import (
     _LEVEL_MAP,
+    AUDIT_LOG_ENQUEUE,
+    AUDIT_LOG_FILE_RETENTION,
     AUDIT_LOG_FILE_ROTATION_SIZE,
     AUDIT_LOG_LEVEL,
+    AUDIT_LOG_STRICT,
     AUDIT_LOGS_FILE_PATH,
     AUDIT_UVICORN_LOGGER_NAMES,
     ENABLE_AUDIT_LOGS_FILE,
@@ -25,6 +28,16 @@ if TYPE_CHECKING:
     from loguru import Message, Record
 
 
+# Both formatters stash their serialized payload back onto `extra` to interpolate
+# it. These scratch keys are not audit fields and must never be emitted — nor
+# serialized into each other, which would nest a full copy of every record.
+_STDOUT_EXTRA_KEY = 'extra_json'
+_FILE_EXTRA_KEY = 'file_extra'
+# `auditable` is Loguru's binding marker, and joins them as the only other key
+# on an audit record that is not one of the entry's own fields.
+_NON_AUDIT_EXTRA_KEYS = frozenset({'auditable', _STDOUT_EXTRA_KEY, _FILE_EXTRA_KEY})
+
+
 def stdout_format(record: 'Record') -> str:
     """
     Generates a formatted string for log records that are output to the console. This format includes a timestamp, log level, source location (module, function, and line), the log message, and any extra data (serialized as JSON).
@@ -35,7 +48,8 @@ def stdout_format(record: 'Record') -> str:
     str: A formatted log string intended for stdout.
     """
     if record['extra']:
-        record['extra']['extra_json'] = JSONCodec.dumps(record['extra'])
+        payload = {key: value for key, value in record['extra'].items() if key not in _NON_AUDIT_EXTRA_KEYS}
+        record['extra'][_STDOUT_EXTRA_KEY] = JSONCodec.dumps(payload)
         extra_format = ' - {extra[extra_json]}'
     else:
         extra_format = ''
@@ -47,33 +61,42 @@ def stdout_format(record: 'Record') -> str:
     )
 
 
+def _write_json_record(message: 'Message') -> None:
+    """Write one log record as a single line of JSON to stdout.
+
+    Raises on failure. `_json_sink` wraps this for ordinary application logs;
+    strict audit sinks use it directly so a broken stdout is not swallowed.
+    """
+    record = message.record
+    log_entry = {
+        'ts': record['time'].isoformat(timespec='milliseconds'),
+        'level': _LEVEL_MAP.get(record['level'].name, record['level'].name.lower()),
+        'msg': record['message'],
+        'caller': f'{record["name"]}:{record["function"]}:{record["line"]}',
+    }
+
+    if record['extra']:
+        log_entry['extra'] = record['extra']
+
+    exc = record['exception']
+    if exc is not None:
+        log_entry['error'] = {
+            'type': exc.type.__name__ if exc.type else None,
+            'message': str(exc.value) if exc.value else None,
+            'stacktrace': ''.join(traceback.format_exception(exc.type, exc.value, exc.traceback)).rstrip(),
+        }
+
+    sys.stdout.write(json.dumps(log_entry, ensure_ascii=False, default=str) + '\n')
+    sys.stdout.flush()
+
+
 def _json_sink(message: 'Message') -> None:
     """Write log records as single-line JSON to stdout.
 
     Used as a Loguru sink when LOG_FORMAT is set to "json".
     """
     try:
-        record = message.record
-        log_entry = {
-            'ts': record['time'].isoformat(timespec='milliseconds'),
-            'level': _LEVEL_MAP.get(record['level'].name, record['level'].name.lower()),
-            'msg': record['message'],
-            'caller': f'{record["name"]}:{record["function"]}:{record["line"]}',
-        }
-
-        if record['extra']:
-            log_entry['extra'] = record['extra']
-
-        exc = record['exception']
-        if exc is not None:
-            log_entry['error'] = {
-                'type': exc.type.__name__ if exc.type else None,
-                'message': str(exc.value) if exc.value else None,
-                'stacktrace': ''.join(traceback.format_exception(exc.type, exc.value, exc.traceback)).rstrip(),
-            }
-
-        sys.stdout.write(json.dumps(log_entry, ensure_ascii=False, default=str) + '\n')
-        sys.stdout.flush()
+        _write_json_record(message)
     except Exception:
         # Last-resort fallback: never let a logging failure crash the application.
         # Emit a minimal valid JSON line so the structured logging pipeline stays intact.
@@ -146,23 +169,138 @@ def file_format(record: 'Record'):
     str: A JSON-formatted string representing the audit data.
     """
 
-    audit_data = {
-        'id': record['extra'].get('id', ''),
-        'timestamp': int(record['time'].timestamp()),
-        'user': record['extra'].get('user', dict()),
-        'audit_level': record['extra'].get('audit_level', ''),
-        'verb': record['extra'].get('verb', ''),
-        'request_uri': record['extra'].get('request_uri', ''),
-        'response_status_code': record['extra'].get('response_status_code', 0),
-        'source_ip': record['extra'].get('source_ip', ''),
-        'user_agent': record['extra'].get('user_agent', ''),
-        'request_object': record['extra'].get('request_object', b''),
-        'response_object': record['extra'].get('response_object', b''),
-        'extra': record['extra'].get('extra', {}),
-    }
+    extra = record['extra']
 
-    record['extra']['file_extra'] = json.dumps(audit_data, default=str)
+    # Emit every field the entry carries rather than a hand-maintained allowlist,
+    # which had already dropped `error_truncated` — a shortened error reached the
+    # file reading as complete. `_NON_AUDIT_EXTRA_KEYS` covers the rest.
+    audit_data = {'timestamp': int(record['time'].timestamp())}
+    audit_data.update({key: value for key, value in extra.items() if key not in _NON_AUDIT_EXTRA_KEYS})
+    audit_data.setdefault('extra', {})
+
+    # `default=str` keeps an exotic value from raising here: a formatter that
+    # raises loses the record, and an audit record is not allowed to be lost.
+    extra[_FILE_EXTRA_KEY] = json.dumps(audit_data, default=str)
     return '{extra[file_extra]}\n'
+
+
+def _is_auditable(record) -> bool:
+    return record['extra'].get('auditable') is True
+
+
+def _not_auditable(record) -> bool:
+    return not _is_auditable(record)
+
+
+def _assert_strict_audit_is_possible():
+    """Refuse to start when AUDIT_LOG_STRICT cannot mean anything.
+
+    Strict mode promises no audit event goes missing. Two configurations make
+    that promise vacuous rather than strict, so both are rejected up front:
+    an unrecognised level, and NONE — `main.py` omits AuditLoggingMiddleware in
+    either case, leaving the process running with strict guarantees over an
+    empty trail.
+    """
+    # Imported here so the module graph stays acyclic; by the time this runs
+    # (from the lifespan) everything is loaded anyway.
+    from open_webui.utils.audit import AuditLevel
+
+    try:
+        level = AuditLevel(AUDIT_LOG_LEVEL)
+    except ValueError as e:
+        raise RuntimeError(
+            f'AUDIT_LOG_STRICT is enabled but AUDIT_LOG_LEVEL={AUDIT_LOG_LEVEL!r} is not a valid level, '
+            f'which leaves the audit middleware uninstalled and nothing recorded.'
+        ) from e
+
+    if level == AuditLevel.NONE:
+        raise RuntimeError(
+            'AUDIT_LOG_STRICT is enabled but AUDIT_LOG_LEVEL is NONE, which records nothing. '
+            'Set AUDIT_LOG_LEVEL to METADATA, REQUEST or REQUEST_RESPONSE, or disable AUDIT_LOG_STRICT.'
+        )
+
+
+def _add_audit_sinks():
+    """Register the sinks that carry audit records.
+
+    Audit records never share the application sink. They are emitted at INFO and
+    used to be dropped whenever GLOBAL_LOG_LEVEL was raised above it, so
+    ENABLE_AUDIT_STDOUT gets its own sink pinned to INFO instead.
+    """
+    if AUDIT_LOG_STRICT:
+        _assert_strict_audit_is_possible()
+
+    if AUDIT_LOG_LEVEL == 'NONE':
+        # Nothing emits auditable records at this level, so there is nothing to sink.
+        return
+
+    if AUDIT_LOG_STRICT and not ENABLE_AUDIT_STDOUT and not ENABLE_AUDIT_LOGS_FILE:
+        # `_not_auditable` keeps audit records off the application sink, so there
+        # is no fallback destination: booting with nowhere to put them is exactly
+        # the failure strict mode prevents.
+        raise RuntimeError(
+            'AUDIT_LOG_STRICT is enabled but no audit destination is: '
+            'enable ENABLE_AUDIT_LOGS_FILE or ENABLE_AUDIT_STDOUT.'
+        )
+
+    if ENABLE_AUDIT_STDOUT:
+        # Propagate write failures like the file sink: bypass `_json_sink`'s own
+        # swallow as well as Loguru's `catch`, or a broken stdout leaves a strict
+        # deployment serving with its only audit destination dead.
+        catch = not AUDIT_LOG_STRICT
+        if LOG_FORMAT == 'json':
+            logger.add(
+                _write_json_record if AUDIT_LOG_STRICT else _json_sink,
+                level='INFO',
+                filter=_is_auditable,
+                diagnose=LOGURU_DIAGNOSE,
+                catch=catch,
+            )
+        else:
+            logger.add(
+                sys.stdout,
+                level='INFO',
+                format=stdout_format,
+                filter=_is_auditable,
+                diagnose=LOGURU_DIAGNOSE,
+                catch=catch,
+            )
+
+    if not ENABLE_AUDIT_LOGS_FILE:
+        return
+
+    # Loguru's queued writer catches sink exceptions unconditionally, never
+    # consulting `catch`, so strict mode needs the write inline and overrides an
+    # explicit AUDIT_LOG_ENQUEUE.
+    enqueue = AUDIT_LOG_ENQUEUE and not AUDIT_LOG_STRICT
+    if AUDIT_LOG_ENQUEUE and AUDIT_LOG_STRICT:
+        logger.warning('AUDIT_LOG_ENQUEUE is ignored while AUDIT_LOG_STRICT is enabled; writing audit records inline.')
+
+    try:
+        logger.add(
+            AUDIT_LOGS_FILE_PATH,
+            level='INFO',
+            rotation=AUDIT_LOG_FILE_ROTATION_SIZE,
+            retention=AUDIT_LOG_FILE_RETENTION,
+            compression='zip',
+            format=file_format,
+            filter=_is_auditable,
+            diagnose=LOGURU_DIAGNOSE,
+            # Disk write and rotation-time zip move off the event loop thread;
+            # stop_logger() drains what is buffered on shutdown.
+            enqueue=enqueue,
+            # In strict mode a failed audit write must surface to the caller
+            # instead of being swallowed by Loguru's own error handling.
+            catch=not AUDIT_LOG_STRICT,
+        )
+    except Exception as e:
+        if AUDIT_LOG_STRICT:
+            # Running with auditing configured but no audit sink is exactly the
+            # silent-loss failure strict mode exists to prevent.
+            raise RuntimeError(
+                f'AUDIT_LOG_STRICT is enabled but the audit log file handler could not be initialized: {e}'
+            ) from e
+        logger.error(f'Failed to initialize audit log file handler: {str(e)}')
 
 
 def start_logger():
@@ -178,12 +316,11 @@ def start_logger():
     """
     logger.remove()
 
-    audit_filter = lambda record: True if ENABLE_AUDIT_STDOUT else 'auditable' not in record['extra']
     if LOG_FORMAT == 'json':
         logger.add(
             _json_sink,
             level=GLOBAL_LOG_LEVEL,
-            filter=audit_filter,
+            filter=_not_auditable,
             diagnose=LOGURU_DIAGNOSE,
         )
     else:
@@ -191,22 +328,11 @@ def start_logger():
             sys.stdout,
             level=GLOBAL_LOG_LEVEL,
             format=stdout_format,
-            filter=audit_filter,
+            filter=_not_auditable,
             diagnose=LOGURU_DIAGNOSE,
         )
-    if AUDIT_LOG_LEVEL != 'NONE' and ENABLE_AUDIT_LOGS_FILE:
-        try:
-            logger.add(
-                AUDIT_LOGS_FILE_PATH,
-                level='INFO',
-                rotation=AUDIT_LOG_FILE_ROTATION_SIZE,
-                compression='zip',
-                format=file_format,
-                filter=lambda record: record['extra'].get('auditable') is True,
-                diagnose=LOGURU_DIAGNOSE,
-            )
-        except Exception as e:
-            logger.error(f'Failed to initialize audit log file handler: {str(e)}')
+
+    _add_audit_sinks()
 
     logging.basicConfig(handlers=[InterceptHandler()], level=GLOBAL_LOG_LEVEL, force=True)
 
@@ -221,3 +347,17 @@ def start_logger():
         uvicorn_logger.handlers = [InterceptHandler()]
 
     logger.info(f'GLOBAL_LOG_LEVEL: {GLOBAL_LOG_LEVEL}')
+
+
+async def stop_logger():
+    """Flush every sink before the process goes away.
+
+    With `AUDIT_LOG_ENQUEUE` the audit sink hands records to a background
+    writer; without this drain, records still sitting in that queue at shutdown
+    are lost. Safe to call when nothing is enqueued.
+    """
+    try:
+        await logger.complete()
+    except Exception as e:
+        sys.stderr.write(f'[logging error] failed to flush log sinks on shutdown: {e}\n')
+        sys.stderr.flush()

@@ -37,7 +37,7 @@ from urllib.parse import parse_qs, urlencode
 
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from open_webui.env import CUSTOM_API_KEY_HEADER
+from open_webui.env import AUDIT_LOG_STRICT, CUSTOM_API_KEY_HEADER
 from open_webui.internal.db import ScopedSession
 from open_webui.utils.auth import get_http_authorization_cred
 from open_webui.utils.security_headers import set_security_headers
@@ -46,6 +46,33 @@ from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 log = logging.getLogger(__name__)
+
+
+def _record_audit_rollback(scope: Scope, error: Exception, rollback_error: Exception | None = None) -> None:
+    """Note a post-response rollback on the audit trail.
+
+    Best effort except under `AUDIT_LOG_STRICT`, which re-raises so a lost
+    correction is not itself silent. When the rollback also failed the record
+    says the outcome is unknown rather than claiming it was rolled back.
+    """
+    if rollback_error is None:
+        message = f'post-response session commit failed and was rolled back: {type(error).__name__}: {error}'
+    else:
+        message = (
+            'post-response session commit failed and the rollback failed too; '
+            'the transaction outcome is unknown: '
+            f'commit={type(error).__name__}: {error}; '
+            f'rollback={type(rollback_error).__name__}: {rollback_error}'
+        )
+
+    try:
+        from open_webui.utils.audit import record_audit_error
+
+        record_audit_error(Request(scope), message)
+    except Exception:
+        if AUDIT_LOG_STRICT:
+            raise
+        log.debug('AppHTTPMiddleware: could not record the rollback on the audit trail', exc_info=True)
 
 
 class AppHTTPMiddleware:
@@ -121,7 +148,7 @@ class AppHTTPMiddleware:
             self._rollback_session('AppHTTPMiddleware: rollback failed after downstream error')
             raise
 
-        self._commit_session()
+        self._commit_session(scope)
 
     def _set_token(self, request: Request) -> None:
         token = get_http_authorization_cred(request.headers.get('Authorization'))
@@ -216,7 +243,7 @@ class AppHTTPMiddleware:
         finally:
             ScopedSession.remove()
 
-    def _commit_session(self) -> None:
+    def _commit_session(self, scope: Scope) -> None:
         # Nothing in this request touched the sync session: committing would
         # only instantiate one to run an empty transaction.
         if not ScopedSession.registry.has():
@@ -224,12 +251,21 @@ class AppHTTPMiddleware:
 
         try:
             ScopedSession.commit()
-        except Exception:
+        except Exception as e:
             log.exception('AppHTTPMiddleware: post-request commit failed; response was already sent to client')
+            rollback_error: Exception | None = None
             try:
                 ScopedSession.rollback()
-            except Exception:
+            except Exception as rollback_exception:
+                rollback_error = rollback_exception
                 log.exception('AppHTTPMiddleware: rollback failed after commit failure')
+            # Runs outside the audit middleware, so the trail already records this
+            # mutation as a 2xx success; leave a linked correction.
+            try:
+                _record_audit_rollback(scope, e, rollback_error)
+            except Exception as audit_error:
+                # Chained, or a strict sink failure would replace the commit error.
+                raise e from audit_error
             raise
         finally:
             # CRITICAL: remove() returns the connection to the pool.

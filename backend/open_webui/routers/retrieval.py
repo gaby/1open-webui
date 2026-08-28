@@ -1815,6 +1815,7 @@ def save_docs_to_vector_db(
                 list(map(lambda x: x.replace('\n', ' '), texts)),
                 prefix=RAG_EMBEDDING_CONTENT_PREFIX,
                 user=user,
+                request=request,
             ),
             request.app.state.main_loop,
         )
@@ -3006,7 +3007,7 @@ async def query_doc_handler(
                 collection_result=None,
                 query=form_data.query,
                 embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
+                    query, prefix=prefix, user=user, request=request
                 ),
                 k=form_data.k if form_data.k else config.TOP_K,
                 reranking_function=(
@@ -3024,7 +3025,7 @@ async def query_doc_handler(
             )
         else:
             query_embedding = await request.app.state.EMBEDDING_FUNCTION(
-                form_data.query, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user
+                form_data.query, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user, request=request
             )
             # query_doc wraps a blocking VECTOR_DB_CLIENT.search call;
             # offload so the request's event loop stays responsive.
@@ -3071,7 +3072,7 @@ async def query_collection_handler(
                 collection_names=form_data.collection_names,
                 queries=[form_data.query],
                 embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
+                    query, prefix=prefix, user=user, request=request
                 ),
                 k=form_data.k if form_data.k else config.TOP_K,
                 reranking_function=(
@@ -3098,7 +3099,7 @@ async def query_collection_handler(
                 collection_names=form_data.collection_names,
                 queries=[form_data.query],
                 embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
+                    query, prefix=prefix, user=user, request=request
                 ),
                 k=form_data.k if form_data.k else config.TOP_K,
             )
@@ -3238,7 +3239,11 @@ if ENV == 'dev':
 
     @router.get('/ef/{text}')
     async def get_embeddings(request: Request, text: str | None = 'Hello World!'):
-        return {'result': await request.app.state.EMBEDDING_FUNCTION(text, prefix=RAG_EMBEDDING_QUERY_PREFIX)}
+        return {
+            'result': await request.app.state.EMBEDDING_FUNCTION(
+                text, prefix=RAG_EMBEDDING_QUERY_PREFIX, request=request
+            )
+        }
 
 
 class BatchProcessFilesForm(BaseModel):

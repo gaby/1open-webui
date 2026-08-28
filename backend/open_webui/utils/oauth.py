@@ -1249,6 +1249,8 @@ class OAuthClientManager:
                     detail='OAuth callback user does not match authenticated session',
                 )
 
+            request.state.audit_actor = {'id': user_id, 'auth_type': 'oauth_state', 'verified': True}
+
             # Note: Do NOT pass client_id/client_secret explicitly here.
             # The Authlib client already has these configured during add_client().
             # Passing them again causes Authlib to concatenate them (e.g., "ID1,ID1"),
@@ -2159,6 +2161,9 @@ class OAuthManager:
             return RedirectResponse(url=redirect_url, headers=response.headers)
 
         response = RedirectResponse(url=redirect_url, headers=response.headers)
+
+        # A bare GET, so the middleware has no header or cookie to resolve.
+        request.state.audit_actor = {'id': user.id, 'auth_type': 'oauth', 'verified': True}
 
         # Compute cookie expiry from JWT lifetime
         expires_delta = parse_duration(auth_config.JWT_EXPIRES_IN)

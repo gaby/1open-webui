@@ -148,6 +148,7 @@ async def reindex_memory_vectors_for_user(
                 memory_vector_text(memory.content, memory.path),
                 prefix=RAG_EMBEDDING_CONTENT_PREFIX,
                 user=user,
+                request=request,
             )
             for memory in memories
         ]
@@ -205,7 +206,10 @@ async def add_memory(
     )
 
     vector = await request.app.state.EMBEDDING_FUNCTION(
-        memory_vector_text(memory.content, memory.path), prefix=RAG_EMBEDDING_CONTENT_PREFIX, user=user
+        memory_vector_text(memory.content, memory.path),
+        prefix=RAG_EMBEDDING_CONTENT_PREFIX,
+        user=user,
+        request=request,
     )
 
     await upsert_memory_vectors_or_reindex(
@@ -269,6 +273,7 @@ async def update_memories(
                     memory_vector_text(memory.content, memory.path),
                     prefix=RAG_EMBEDDING_CONTENT_PREFIX,
                     user=user,
+                    request=request,
                 )
                 upsert_items.append(
                     {
@@ -344,7 +349,9 @@ async def query_memory(
     if not memories:
         raise HTTPException(status_code=404, detail='No memories found for user')
 
-    vector = await request.app.state.EMBEDDING_FUNCTION(form_data.content, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user)
+    vector = await request.app.state.EMBEDDING_FUNCTION(
+        form_data.content, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user, request=request
+    )
 
     results = await ASYNC_VECTOR_DB_CLIENT.search(
         collection_name=f'user-memory-{user.id}',
@@ -575,7 +582,10 @@ async def update_memory_by_id(
 
     if form_data.content is not None or form_data.path is not None:
         vector = await request.app.state.EMBEDDING_FUNCTION(
-            memory_vector_text(memory.content, memory.path), prefix=RAG_EMBEDDING_CONTENT_PREFIX, user=user
+            memory_vector_text(memory.content, memory.path),
+            prefix=RAG_EMBEDDING_CONTENT_PREFIX,
+            user=user,
+            request=request,
         )
 
         await upsert_memory_vectors_or_reindex(

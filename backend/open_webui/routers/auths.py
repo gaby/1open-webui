@@ -205,6 +205,17 @@ async def create_session_response(
             **({'max_age': max_age} if max_age is not None else {}),
         )
 
+    # Guarded so `add_user` keeps the admin as actor, not the created user.
+    if not isinstance(getattr(request.state, 'user', None), UserModel):
+        request.state.audit_actor = {
+            'id': user.id,
+            'name': user.name,
+            'email': user.email,
+            'role': user.role,
+            'auth_type': source,
+            'verified': True,
+        }
+
     user_permissions = await get_permissions(user.id, await Config.get('user.permissions'), db=db)
     await publish_event(
         request,
@@ -971,6 +982,15 @@ async def signout(request: Request, response: Response, db: AsyncSession = Depen
         data = decode_token(token)
         if data and data.get('id'):
             actor = await Users.get_user_by_id(data['id'], db=db)
+        if actor is not None:
+            request.state.audit_actor = {
+                'id': actor.id,
+                'name': actor.name,
+                'email': actor.email,
+                'role': actor.role,
+                'auth_type': 'jwt',
+                'verified': True,
+            }
         await invalidate_token(request, token)
         await publish_event(
             request,
