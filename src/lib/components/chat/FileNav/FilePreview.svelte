@@ -7,7 +7,7 @@
 	import { isCodeFile } from '$lib/utils/codeHighlight';
 	import { initMermaid, renderMermaidDiagram } from '$lib/utils';
 	import Spinner from '../../common/Spinner.svelte';
-	import PDFViewer from '../../common/PDFViewer.svelte';
+	import PdfPagesPreview from '../../common/PdfPagesPreview.svelte';
 	import PanzoomContainer from '../../common/PanzoomContainer.svelte';
 	import DocxPreview from '../../common/DocxPreview.svelte';
 	import PptxPreview from '../../common/PptxPreview.svelte';
@@ -16,7 +16,7 @@
 	import SqliteView from './SqliteView.svelte';
 	import FileCodeEditor from './FileCodeEditor.svelte';
 
-	let pdfViewerRef: PDFViewer;
+	let pdfPagesPreviewRef: PdfPagesPreview;
 	let fileCodeEditorRef: FileCodeEditor;
 
 	const i18n = getContext('i18n');
@@ -116,6 +116,7 @@
 	$: isNotebook = getExt(selectedFile) === 'ipynb';
 	$: isCode = isCodeFile(selectedFile);
 	$: csvDelimiter = getExt(selectedFile) === 'tsv' ? '\t' : ',';
+	$: isPptx = getExt(selectedFile) === 'pptx';
 
 	// For HTML files on system terminals (proxy URL), use path-based serving
 	// so the iframe can resolve relative CSS/JS/image references via cookie auth.
@@ -279,13 +280,14 @@
 	};
 
 	export const resetPdfView = () => {
-		pdfViewerRef?.resetView();
+		pdfPagesPreviewRef?.resetView();
 	};
 </script>
 
 <div
 	class="flex-1 {fileImageUrl !== null ||
 	fileDocxData !== null ||
+	filePdfData !== null ||
 	(fileOfficeSlides !== null && fileOfficeSlides.length > 0)
 		? 'overflow-hidden'
 		: 'overflow-y-auto'} min-h-0 min-w-0 relative h-full"
@@ -321,7 +323,16 @@
 			</audio>
 		</div>
 	{:else if filePdfData !== null}
-		<PDFViewer bind:this={pdfViewerRef} data={filePdfData} {targetPage} className="w-full h-full" />
+		<PdfPagesPreview
+			bind:this={pdfPagesPreviewRef}
+			data={filePdfData}
+			bind:currentSlide
+			{targetPage}
+			singlePage={isPptx}
+			itemLabel={isPptx ? 'Slide' : 'Page'}
+			listLabel={isPptx ? 'Slides' : 'Pages'}
+			className="w-full h-full"
+		/>
 	{:else if fileSqliteData !== null}
 		<SqliteView data={fileSqliteData} />
 	{:else if fileDocxData !== null}
