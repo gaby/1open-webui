@@ -37,7 +37,7 @@ from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
 from open_webui.models.notes import Notes, NoteUpdateForm
 from open_webui.models.users import UserNameResponse, Users
-from open_webui.socket.utils import RedisDict, RedisLock, YdocManager
+from open_webui.socket.utils import LocalDict, LocalLock, RedisDict, RedisLock, ReplicatedDict, YdocManager
 from open_webui.tasks import create_task, stop_item_tasks
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.auth import get_verified_user_by_token
@@ -133,12 +133,11 @@ if WEBSOCKET_MANAGER == 'redis':
         async_mode=True,
     )
 
-    MODELS = RedisDict(
+    MODELS = ReplicatedDict(
         f'{REDIS_KEY_PREFIX}:models',
         redis_url=WEBSOCKET_REDIS_URL,
         redis_sentinels=ws_sentinels,
         redis_cluster=WEBSOCKET_REDIS_CLUSTER,
-        cache_set_signature=True,
     )
 
     SESSION_POOL = RedisDict(
@@ -161,10 +160,6 @@ if WEBSOCKET_MANAGER == 'redis':
         redis_sentinels=ws_sentinels,
         redis_cluster=WEBSOCKET_REDIS_CLUSTER,
     )
-    aquire_func = clean_up_lock.aquire_lock
-    renew_func = clean_up_lock.renew_lock
-    release_func = clean_up_lock.release_lock
-
     session_cleanup_lock = RedisLock(
         redis_url=WEBSOCKET_REDIS_URL,
         lock_name=f'{REDIS_KEY_PREFIX}:session_cleanup_lock',
@@ -172,17 +167,14 @@ if WEBSOCKET_MANAGER == 'redis':
         redis_sentinels=ws_sentinels,
         redis_cluster=WEBSOCKET_REDIS_CLUSTER,
     )
-    session_aquire_func = session_cleanup_lock.aquire_lock
-    session_renew_func = session_cleanup_lock.renew_lock
-    session_release_func = session_cleanup_lock.release_lock
 else:
     MODELS = {}
 
-    SESSION_POOL = {}
-    USAGE_POOL = {}
+    SESSION_POOL = LocalDict()
+    USAGE_POOL = LocalDict()
 
-    aquire_func = release_func = renew_func = lambda: True
-    session_aquire_func = session_release_func = session_renew_func = lambda: True
+    clean_up_lock = LocalLock()
+    session_cleanup_lock = LocalLock()
 
 
 YDOC_MANAGER = YdocManager(
@@ -191,32 +183,25 @@ YDOC_MANAGER = YdocManager(
 )
 
 
-def get_session_pool_batches():
-    """All session pool entries, in bounded batches for the Redis backing."""
-    if WEBSOCKET_MANAGER == 'redis':
-        return SESSION_POOL.scan_batches()
-    return [list(SESSION_POOL.items())]
-
-
 async def periodic_session_pool_cleanup():
     """Reap orphaned SESSION_POOL entries that missed heartbeats (e.g. crashed instance)."""
     retry_delay = random.uniform(WEBSOCKET_REDIS_LOCK_TIMEOUT / 2, WEBSOCKET_REDIS_LOCK_TIMEOUT)
     renew_interval = max(WEBSOCKET_REDIS_LOCK_TIMEOUT / 2, 0.5)
     while True:
         try:
-            if not session_aquire_func():
+            if not await session_cleanup_lock.aquire_lock():
                 log.debug('Session cleanup lock held by another node. Retrying.')
                 await asyncio.sleep(retry_delay)
                 continue
 
             try:
                 while True:
-                    if not session_renew_func():
+                    if not await session_cleanup_lock.renew_lock():
                         log.warning('Unable to renew session cleanup lock. Retrying cleanup ownership.')
                         break
 
                     now = int(time.time())
-                    for batch in get_session_pool_batches():
+                    async for batch in SESSION_POOL.scan_batches():
                         expired = [
                             sid
                             for sid, entry in batch
@@ -224,11 +209,7 @@ async def periodic_session_pool_cleanup():
                         ]
                         if expired:
                             log.warning('Reaping %d orphaned session(s) from the session pool', len(expired))
-                            if WEBSOCKET_MANAGER == 'redis':
-                                SESSION_POOL.delete_many(*expired)
-                            else:
-                                for sid in expired:
-                                    SESSION_POOL.pop(sid, None)
+                            await SESSION_POOL.delete_many(*expired)
                         await asyncio.sleep(0)  # don't hold the loop for the whole sweep
 
                     next_cleanup_at = time.monotonic() + SESSION_POOL_TIMEOUT
@@ -238,7 +219,7 @@ async def periodic_session_pool_cleanup():
                         if sleep_for <= 0:
                             break
                         await asyncio.sleep(sleep_for)
-                        if not session_renew_func():
+                        if not await session_cleanup_lock.renew_lock():
                             log.warning('Unable to renew session cleanup lock. Retrying cleanup ownership.')
                             lock_lost = True
                             break
@@ -246,7 +227,7 @@ async def periodic_session_pool_cleanup():
                     if lock_lost:
                         break
             finally:
-                session_release_func()
+                await session_cleanup_lock.release_lock()
         except Exception:
             log.exception('Session pool cleanup failed. Retrying.')
             await asyncio.sleep(retry_delay)
@@ -256,19 +237,19 @@ async def periodic_usage_pool_cleanup():
     retry_delay = random.uniform(WEBSOCKET_REDIS_LOCK_TIMEOUT / 2, WEBSOCKET_REDIS_LOCK_TIMEOUT)
     while True:
         try:
-            if not aquire_func():
+            if not await clean_up_lock.aquire_lock():
                 log.debug('Usage cleanup lock held by another node. Retrying.')
                 await asyncio.sleep(retry_delay)
                 continue
 
             try:
                 while True:
-                    if not renew_func():
+                    if not await clean_up_lock.renew_lock():
                         log.warning('Unable to renew usage cleanup lock. Retrying cleanup ownership.')
                         break
 
                     now = int(time.time())
-                    for model_id, connections in list(USAGE_POOL.items()):
+                    for model_id, connections in await USAGE_POOL.items():
                         expired_sids = [
                             sid
                             for sid, details in connections.items()
@@ -283,15 +264,12 @@ async def periodic_usage_pool_cleanup():
 
                         if not connections:
                             log.debug('Cleaning up model %s from usage pool', model_id)
-                            try:
-                                del USAGE_POOL[model_id]
-                            except KeyError:
-                                pass
+                            await USAGE_POOL.delete(model_id)
                         else:
-                            USAGE_POOL[model_id] = connections
+                            await USAGE_POOL.set(model_id, connections)
                     await asyncio.sleep(TIMEOUT_DURATION)
             finally:
-                release_func()
+                await clean_up_lock.release_lock()
         except Exception:
             log.exception('Usage pool cleanup failed. Retrying.')
             await asyncio.sleep(retry_delay)
@@ -303,14 +281,13 @@ app = socketio.ASGIApp(
 )
 
 
-def get_models_in_use():
+async def get_models_in_use():
     # List models that are currently in use
-    models_in_use = list(USAGE_POOL.keys())
-    return models_in_use
+    return await USAGE_POOL.keys()
 
 
-def get_user_id_from_session_pool(sid):
-    user = SESSION_POOL.get(sid)
+async def get_user_id_from_session_pool(sid):
+    user = await SESSION_POOL.get(sid)
     if user:
         return user['id']
     return None
@@ -330,10 +307,10 @@ def get_session_ids_from_room(room):
     return list(members) if members else []
 
 
-def get_session_ids_by_user_id(user_id: str) -> list[str]:
+async def get_session_ids_by_user_id(user_id: str) -> list[str]:
     """Get known session IDs for a user across the local rooms and shared session pool."""
     session_ids = set(get_session_ids_from_room(f'user:{user_id}'))
-    session_ids.update(sid for sid, entry in SESSION_POOL.items() if entry and entry.get('id') == user_id)
+    session_ids.update(sid for sid, entry in await SESSION_POOL.items() if entry and entry.get('id') == user_id)
     return list(session_ids)
 
 
@@ -382,7 +359,7 @@ async def disconnect_user_sessions(user_id: str):
     The client will automatically reconnect and re-authenticate with
     fresh data from the database.
     """
-    session_ids = get_session_ids_by_user_id(user_id)
+    session_ids = await get_session_ids_by_user_id(user_id)
     for sid in session_ids:
         try:
             await sio.disconnect(sid)
@@ -401,10 +378,8 @@ async def usage(sid, data):
         current_time = int(time.time())
 
         # Store the new usage data and task
-        USAGE_POOL[model_id] = {
-            **(USAGE_POOL.get(model_id) or {}),
-            sid: {'updated_at': current_time},
-        }
+        connections = await USAGE_POOL.get(model_id) or {}
+        await USAGE_POOL.set(model_id, {**connections, sid: {'updated_at': current_time}})
 
 
 @sio.event
@@ -429,7 +404,7 @@ async def connect(sid, environ, auth):
                 ),
                 'last_seen_at': int(time.time()),
             }
-            SESSION_POOL[sid] = socket_user
+            await SESSION_POOL.set(sid, socket_user)
             await sio.save_session(sid, {'user': socket_user})
             await sio.enter_room(sid, f'user:{user.id}')
 
@@ -461,7 +436,7 @@ async def user_join(sid, data):
         'last_seen_at': int(time.time()),
     }
 
-    SESSION_POOL[sid] = socket_user
+    await SESSION_POOL.set(sid, socket_user)
     await sio.save_session(sid, {'user': socket_user})
     await sio.enter_room(sid, f'user:{user.id}')
 
@@ -479,7 +454,7 @@ async def user_join(sid, data):
 async def heartbeat(sid, data):
     user = await get_socket_session_user(sid)
     if user:
-        SESSION_POOL[sid] = {**user, 'last_seen_at': int(time.time())}
+        await SESSION_POOL.set(sid, {**user, 'last_seen_at': int(time.time())})
         await Users.update_last_active_by_id(user['id'])
 
 
@@ -930,22 +905,17 @@ async def yjs_awareness_update(sid, data):
 
 @sio.event
 async def disconnect(sid, reason=None):
-    if sid in SESSION_POOL:
-        del SESSION_POOL[sid]
-
+    if await SESSION_POOL.delete(sid):
         # Clean up USAGE_POOL entries for this session
-        for model_id, connections in list(USAGE_POOL.items()):
+        for model_id, connections in await USAGE_POOL.items():
             if sid in connections:
                 del connections[sid]
                 if not connections:
-                    del USAGE_POOL[model_id]
+                    await USAGE_POOL.delete(model_id)
                 else:
-                    USAGE_POOL[model_id] = connections
+                    await USAGE_POOL.set(model_id, connections)
 
         await YDOC_MANAGER.remove_user_from_all_documents(sid)
-    else:
-        pass
-        # print(f"Unknown session ID {sid} disconnected")
 
 
 async def _make_channel_emitter(request_info):
@@ -1191,7 +1161,7 @@ async def get_event_call(request_info):
         session_id = request_info['session_id']
 
         # session_id is client-supplied; only the requesting user's own live session may be targeted.
-        session = SESSION_POOL.get(session_id)
+        session = await SESSION_POOL.get(session_id)
         if session is None or session.get('id') != request_info.get('user_id'):
             log.warning(f'Event caller: session {session_id} not owned by requesting user or disconnected')
             return {'error': 'Client session disconnected.'}

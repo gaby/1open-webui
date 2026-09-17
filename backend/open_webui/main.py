@@ -193,6 +193,7 @@ from open_webui.socket.main import (
 from open_webui.socket.main import (
     app as socket_app,
 )
+from open_webui.socket.utils import ReplicatedDict
 from open_webui.tasks import (
     cleanup_task,
     create_task,
@@ -390,6 +391,14 @@ async def lifespan(app: FastAPI):
     app.state.periodic_usage_pool_cleanup = asyncio.create_task(periodic_usage_pool_cleanup())
     app.state.periodic_session_pool_cleanup = asyncio.create_task(periodic_session_pool_cleanup())
 
+    if isinstance(MODELS, ReplicatedDict):
+        # Load the shared model registry before serving, then keep the local snapshot in sync.
+        try:
+            await MODELS.refresh()
+        except Exception:
+            log.exception('Failed to load the shared model registry from Redis; replication will keep retrying')
+        app.state.models_replication = asyncio.create_task(MODELS.run())
+
     from open_webui.utils.automations import scheduler_worker_loop
 
     app.state.scheduler_worker_loop = asyncio.create_task(scheduler_worker_loop(app))
@@ -472,6 +481,9 @@ async def lifespan(app: FastAPI):
 
     if hasattr(app.state, 'redis_task_command_listener'):
         app.state.redis_task_command_listener.cancel()
+
+    if hasattr(app.state, 'models_replication'):
+        app.state.models_replication.cancel()
 
     app.state.periodic_usage_pool_cleanup.cancel()
     app.state.periodic_session_pool_cleanup.cancel()
@@ -2123,7 +2135,7 @@ async def list_tasks_endpoint(request: Request, user=Depends(get_admin_user)):
 async def list_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=Depends(get_verified_user)):
     socket_id = get_temporary_chat_session_id(chat_id)
     if socket_id:
-        owner_id = get_user_id_from_session_pool(socket_id)
+        owner_id = await get_user_id_from_session_pool(socket_id)
         if owner_id != user.id and user.role != 'admin':
             return {'task_ids': []}
     else:
@@ -2142,7 +2154,7 @@ async def stop_tasks_by_chat_id_endpoint(request: Request, chat_id: str, user=De
     socket_id = get_temporary_chat_session_id(chat_id)
     chat = None
     if socket_id:
-        owner_id = get_user_id_from_session_pool(socket_id)
+        owner_id = await get_user_id_from_session_pool(socket_id)
         if owner_id != user.id and user.role != 'admin':
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
     else:
@@ -2613,7 +2625,7 @@ async def get_current_usage(user=Depends(get_verified_user)):
             )
 
         return {
-            'model_ids': get_models_in_use(),
+            'model_ids': await get_models_in_use(),
             'user_count': await Users.get_active_user_count(),
         }
     except HTTPException:

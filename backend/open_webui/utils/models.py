@@ -18,7 +18,7 @@ from open_webui.models.models import Models
 from open_webui.utils.chat_variables import get_chat_variables_schema
 from open_webui.models.users import UserModel
 from open_webui.routers import ollama, openai
-from open_webui.socket.utils import RedisDict
+from open_webui.socket.utils import ReplicatedDict
 from open_webui.utils.access_control import has_access, has_base_model_access
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.plugin import (
@@ -391,7 +391,7 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
             for filter_id in set(model.pop('filter_ids', [])) | global_filter_ids
             if filter_id in enabled_filter_ids
         ]
-        # Set order varies per process, and an unstable order defeats the RedisDict content signature.
+        # Set order varies per process, and an unstable order defeats the ReplicatedDict content signature.
         filter_ids.sort()
 
         model['actions'] = []
@@ -446,12 +446,12 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
             model['ollama'] = model['ollama'].copy()
             model['ollama'].pop('expires_at', None)
         models_dict[model['id']] = model
-    if isinstance(request.app.state.MODELS, RedisDict):
+    if isinstance(request.app.state.MODELS, ReplicatedDict):
         try:
-            request.app.state.MODELS.set(models_dict)
+            await request.app.state.MODELS.set(models_dict)
         except Exception as e:
-            log.warning(f'Failed to update Redis model cache, using in-process cache: {e}')
-            request.app.state.MODELS = models_dict
+            # The local snapshot is already updated; only the other instances lag until replication recovers.
+            log.warning(f'Failed to replicate the model registry to Redis: {e}')
     else:
         request.app.state.MODELS = models_dict
 

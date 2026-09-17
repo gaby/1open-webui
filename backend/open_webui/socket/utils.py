@@ -1,10 +1,19 @@
-"""Redis-backed distributed data structures for WebSocket state management."""
+"""Redis-backed distributed data structures for WebSocket state management.
+
+Everything here talks to Redis through the async client. The sync client that
+was used before blocked the event loop for a full round trip on every socket
+connect, heartbeat, usage report and disconnect, and for a whole ``HGETALL`` of
+the model registry on every chat request.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import suppress
 
 import pycrdt as Y
 from open_webui.env import REDIS_KEY_PREFIX
@@ -16,6 +25,15 @@ log = logging.getLogger(__name__)
 
 YDOC_KEY_PREFIX = f'{REDIS_KEY_PREFIX}:ydoc:documents'
 SCAN_BATCH_SIZE = 200
+
+# ReplicatedDict re-checks the shared signature this often even when no
+# invalidation arrives: it covers a dropped pub/sub connection and writers that
+# predate the invalidation channel (a rolling upgrade).
+REPLICATION_POLL_INTERVAL = 5.0
+REPLICATION_RECONNECT_INTERVAL = 1.0
+REPLICATION_MAX_RECONNECT_INTERVAL = 30.0
+
+_MISSING = object()
 
 
 class RedisLock:
@@ -50,150 +68,279 @@ class RedisLock:
             redis_url,
             redis_sentinels,
             redis_cluster=redis_cluster,
+            async_mode=True,
             decode_responses=True,
         )
 
-    def aquire_lock(self):
+    async def aquire_lock(self) -> bool:
         # nx=True will only set this key if it _hasn't_ already been set
-        self.lock_obtained = self.redis.set(self.lock_name, self.lock_id, nx=True, ex=self.timeout_secs)
+        self.lock_obtained = bool(await self.redis.set(self.lock_name, self.lock_id, nx=True, ex=self.timeout_secs))
         return self.lock_obtained
 
-    def renew_lock(self):
-        return bool(self.redis.eval(self._RENEW_SCRIPT, 1, self.lock_name, self.lock_id, self.timeout_secs))
+    async def renew_lock(self) -> bool:
+        return bool(await self.redis.eval(self._RENEW_SCRIPT, 1, self.lock_name, self.lock_id, self.timeout_secs))
 
-    def release_lock(self):
+    async def release_lock(self) -> None:
         try:
-            self.redis.eval(self._RELEASE_SCRIPT, 1, self.lock_name, self.lock_id)
+            await self.redis.eval(self._RELEASE_SCRIPT, 1, self.lock_name, self.lock_id)
         except (RedisClusterException, RedisError) as e:
             log.warning('Failed to release lock %s; it expires on its own: %s', self.lock_name, e)
 
 
+class LocalLock:
+    """Single-process stand-in for RedisLock: there is nobody to contend with."""
+
+    async def aquire_lock(self) -> bool:
+        return True
+
+    async def renew_lock(self) -> bool:
+        return True
+
+    async def release_lock(self) -> None:
+        return None
+
+
 class RedisDict:
+    """Awaitable dict-like view of one Redis hash, for state shared across instances."""
+
     def __init__(
         self,
         name,
         redis_url,
         redis_sentinels=[],
         redis_cluster=False,
-        cache_set_signature=False,
     ):
         self.name = name
-        self._signature_name = f'{name}:signature' if cache_set_signature else None
         self.redis = get_redis_connection(
             redis_url,
             redis_sentinels,
             redis_cluster=redis_cluster,
+            async_mode=True,
             decode_responses=True,
         )
 
-    def __setitem__(self, key, value):
-        serialized_value = JSONCodec.dumps(value)
-        self.redis.hset(self.name, key, serialized_value)
-        if self._signature_name:
-            self.redis.delete(self._signature_name)
+    async def get(self, key, default=None):
+        value = await self.redis.hget(self.name, key)
+        return default if value is None else JSONCodec.loads(value)
 
-    def __getitem__(self, key):
-        value = self.redis.hget(self.name, key)
-        if value is None:
-            raise KeyError(key)
-        return JSONCodec.loads(value)
+    async def set(self, key, value) -> None:
+        await self.redis.hset(self.name, key, JSONCodec.dumps(value))
 
-    def __delitem__(self, key):
-        result = self.redis.hdel(self.name, key)
-        if result == 0:
-            raise KeyError(key)
-        if self._signature_name:
-            self.redis.delete(self._signature_name)
+    async def delete(self, key) -> bool:
+        """Remove ``key``; False when it was not there."""
+        return bool(await self.redis.hdel(self.name, key))
 
-    def __contains__(self, key):
-        return self.redis.hexists(self.name, key)
+    async def delete_many(self, *keys) -> None:
+        """Delete fields in one HDEL; no keys is a no-op (HDEL rejects an empty field list)."""
+        if keys:
+            await self.redis.hdel(self.name, *keys)
 
-    def __len__(self):
-        return self.redis.hlen(self.name)
+    async def contains(self, key) -> bool:
+        return bool(await self.redis.hexists(self.name, key))
 
-    def keys(self):
-        return self.redis.hkeys(self.name)
+    async def keys(self) -> list:
+        return await self.redis.hkeys(self.name)
 
-    def values(self):
-        return [JSONCodec.loads(v) for v in self.redis.hvals(self.name)]
+    async def values(self) -> list:
+        return [JSONCodec.loads(v) for v in await self.redis.hvals(self.name)]
 
-    def items(self):
-        return [(k, JSONCodec.loads(v)) for k, v in self.redis.hgetall(self.name).items()]
+    async def items(self) -> list[tuple]:
+        return [(k, JSONCodec.loads(v)) for k, v in (await self.redis.hgetall(self.name)).items()]
 
-    def scan_batches(self):
+    async def scan_batches(self) -> AsyncIterator[list[tuple]]:
         """Yield lists of (key, value) pairs via incremental HSCAN; a field may repeat across batches."""
         cursor = 0
         while True:
-            cursor, batch = self.redis.hscan(self.name, cursor, count=SCAN_BATCH_SIZE)
+            cursor, batch = await self.redis.hscan(self.name, cursor, count=SCAN_BATCH_SIZE)
             if batch:
                 yield [(k, JSONCodec.loads(v)) for k, v in batch.items()]
             if cursor == 0:
                 break
 
-    def delete_many(self, *keys):
-        """Delete fields in one HDEL; no keys is a no-op (HDEL rejects an empty field list)."""
-        if keys:
-            self.redis.hdel(self.name, *keys)
-            self._last_signature = None
+    async def clear(self) -> None:
+        await self.redis.delete(self.name)
 
-    def set(self, mapping: dict):
-        if not mapping:
-            self.clear()
-            return
 
-        # Serialize values once — reused for both the fingerprint and the write.
-        serialized = {k: JSONCodec.dumps(v) for k, v in mapping.items()}
+class LocalDict:
+    """In-process counterpart of RedisDict with the same awaitable API."""
+
+    def __init__(self):
+        self._data: dict = {}
+
+    async def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    async def set(self, key, value) -> None:
+        self._data[key] = value
+
+    async def delete(self, key) -> bool:
+        return self._data.pop(key, _MISSING) is not _MISSING
+
+    async def delete_many(self, *keys) -> None:
+        for key in keys:
+            self._data.pop(key, None)
+
+    async def contains(self, key) -> bool:
+        return key in self._data
+
+    async def keys(self) -> list:
+        return list(self._data)
+
+    async def values(self) -> list:
+        return list(self._data.values())
+
+    async def items(self) -> list[tuple]:
+        return list(self._data.items())
+
+    async def scan_batches(self) -> AsyncIterator[list[tuple]]:
+        yield list(self._data.items())
+
+    async def clear(self) -> None:
+        self._data.clear()
+
+
+class ReplicatedDict:
+    """A read-mostly dict shared through Redis and replicated into every instance.
+
+    Reads (``get``, ``in``, ``[]``, ``items`` …) are plain lookups on a local
+    snapshot, so they never touch Redis and never block the event loop. ``set``
+    writes the whole mapping to Redis and publishes an invalidation; ``run``
+    keeps the snapshot current by following those invalidations and by
+    re-checking the shared signature every ``poll_interval`` seconds.
+
+    Snapshots are replaced, never mutated, so an iteration that is under way
+    keeps seeing one consistent mapping while a refresh lands.
+    """
+
+    def __init__(
+        self,
+        name,
+        redis_url,
+        redis_sentinels=[],
+        redis_cluster=False,
+        poll_interval: float = REPLICATION_POLL_INTERVAL,
+    ):
+        self.name = name
+        self._signature_name = f'{name}:signature'
+        self._channel = f'{name}:invalidations'
+        self._poll_interval = poll_interval
+        self.redis = get_redis_connection(
+            redis_url,
+            redis_sentinels,
+            redis_cluster=redis_cluster,
+            async_mode=True,
+            decode_responses=True,
+        )
+        self._data: dict = {}
+        self._signature: str | None = None
+
+    # -- local snapshot: synchronous, no I/O --------------------------------
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __contains__(self, key) -> bool:
+        return key in self._data
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def items(self):
+        return self._data.items()
+
+    # -- replication ---------------------------------------------------------
+
+    @staticmethod
+    def _fingerprint(serialized: dict[str, str]) -> str:
         digest = hashlib.sha256()
         for key in sorted(serialized):
             digest.update(key.encode())
             digest.update(b'\0')
             digest.update(serialized[key].encode())
             digest.update(b'\0')
-        signature = digest.hexdigest()
+        return digest.hexdigest()
 
-        if self._signature_name and self.redis.get(self._signature_name) == signature:
+    async def set(self, mapping: dict) -> None:
+        """Replace the whole mapping, locally first and then in Redis.
+
+        The snapshot is swapped before any I/O, so this instance serves what it
+        just computed even when replication fails; the error is re-raised for
+        the caller to report, and the next ``set`` or ``refresh`` re-syncs.
+        """
+        serialized = {k: JSONCodec.dumps(v) for k, v in mapping.items()}
+        signature = self._fingerprint(serialized)
+        self._data = dict(mapping)
+        if signature == self._signature:
             return
 
-        # Fetch existing keys before writing so we know which ones to remove.
-        # HKEYS is cheap — it transfers only short key strings, not large JSON values.
-        existing_keys = set(self.redis.hkeys(self.name))
-        new_keys = set(mapping.keys())
-        keys_to_remove = existing_keys - new_keys
+        self._signature = None
+        if await self.redis.get(self._signature_name) != signature:
+            await self._write(serialized, signature)
+        self._signature = signature
 
-        # HSET first (add/update all new values), then HDEL (remove stale keys).
-        # We never DELETE the whole hash — this eliminates the race window
-        # where concurrent readers would see an empty models dict.
-        self.redis.hset(self.name, mapping=serialized)
-        if keys_to_remove:
-            self.redis.hdel(self.name, *keys_to_remove)
+    async def _write(self, serialized: dict[str, str], signature: str) -> None:
+        # HSET first (add/update), then HDEL the stale fields. The hash is never
+        # DELeted outright, so a concurrent reader never sees an empty registry.
+        stale = set(await self.redis.hkeys(self.name)) - serialized.keys()
+        if serialized:
+            await self.redis.hset(self.name, mapping=serialized)
+        if stale:
+            await self.redis.hdel(self.name, *stale)
+        await self.redis.set(self._signature_name, signature)
+        await self.redis.publish(self._channel, signature)
 
-        if self._signature_name:
-            self.redis.set(self._signature_name, signature)
+    async def refresh(self) -> bool:
+        """Reload the snapshot if the shared signature moved; True when it did."""
+        signature = await self.redis.get(self._signature_name)
+        if signature == self._signature:
+            return False
+        # Signature before data: a write that lands in between leaves the data
+        # newer than the signature we keep, so the next check reloads again.
+        raw = await self.redis.hgetall(self.name)
+        self._data = {k: JSONCodec.loads(v) for k, v in raw.items()}
+        self._signature = signature
+        return True
 
-    def get(self, key, default=None):
+    async def run(self) -> None:
+        """Keep the snapshot current until cancelled, reconnecting with backoff."""
+        reconnect_interval = REPLICATION_RECONNECT_INTERVAL
+        while True:
+            try:
+                await self._follow()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception('%s replication failed; retrying in %.1fs', self.name, reconnect_interval)
+            await asyncio.sleep(reconnect_interval)
+            reconnect_interval = min(reconnect_interval * 2, REPLICATION_MAX_RECONNECT_INTERVAL)
+
+    async def _follow(self) -> None:
+        await self.refresh()
+        # RedisCluster can't route a pubsub subscribe until initialize() fills its slot cache.
+        await self.redis.initialize()
+        pubsub = self.redis.pubsub()
         try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def clear(self):
-        if self._signature_name:
-            self.redis.delete(self.name)
-            self.redis.delete(self._signature_name)
-        else:
-            self.redis.delete(self.name)
-
-    def update(self, other=None, **kwargs):
-        if other is not None:
-            for k, v in other.items() if hasattr(other, 'items') else other:
-                self[k] = v
-        for k, v in kwargs.items():
-            self[k] = v
-
-    def setdefault(self, key, default=None):
-        if key not in self:
-            self[key] = default
-        return self[key]
+            await pubsub.subscribe(self._channel)
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=self._poll_interval)
+                # A timeout is the periodic backstop; our own publish echoes back and is skipped.
+                if message is None or message.get('data') != self._signature:
+                    await self.refresh()
+        finally:
+            with suppress(Exception):
+                await pubsub.aclose()
 
 
 class YdocManager:
