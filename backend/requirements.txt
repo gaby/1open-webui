@@ -6,7 +6,7 @@ itsdangerous==2.2.0
 
 python-socketio==5.16.2
 orjson==3.11.9
-cryptography==48.0.0
+cryptography==50.0.0
 bcrypt==5.0.0
 argon2-cffi==25.1.0
 PyJWT[crypto]==2.13.0
@@ -37,7 +37,7 @@ redis==8.0.1
 hiredis==3.4.0
 
 APScheduler==3.11.2
-RestrictedPython==8.2
+RestrictedPython==8.4
 pytz==2026.2
 
 loguru==0.7.3
@@ -61,24 +61,24 @@ chromadb==1.5.9
 weaviate-client==4.20.3
 opensearch-py==3.2.0
 
-transformers==5.5.4
+transformers==5.10.1
 sentence-transformers==5.5.1
-accelerate==1.13.0
+accelerate==1.15.0
 pyarrow==20.0.0 # fix: pin pyarrow version to 20 for rpi compatibility #15897
 einops==0.8.2 
 
 ftfy==6.3.1
 chardet==7.4.3
-pypdf==6.7.5
+pypdf==6.16.1
 fpdf2==2.8.7
 pymdown-extensions==10.21.3
 docx2txt==0.9
 python-docx==1.2.0
 python-pptx==1.0.2
 msoffcrypto-tool==6.0.0
-unstructured==0.22.31
+unstructured==0.24.0
 
-nltk==3.9.4
+nltk==3.10.3
 Markdown==3.10.2
 beautifulsoup4==4.14.3
 lxml==6.1.1
