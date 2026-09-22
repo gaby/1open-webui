@@ -14,7 +14,7 @@ dependencies = [
 
     "python-socketio==5.16.2",
     "orjson==3.11.9",
-    "cryptography==48.0.0",
+    "cryptography==50.0.0",
     "bcrypt==5.0.0",
     "argon2-cffi==25.1.0",
     "PyJWT[crypto]==2.13.0",
@@ -66,15 +66,15 @@ dependencies = [
     "PyMySQL==1.2.0",
     "boto3==1.42.62",
     
-    "transformers==5.5.4",
+    "transformers==5.10.1",
     "sentence-transformers==5.5.1",
-    "accelerate==1.13.0",
+    "accelerate==1.15.0",
     "pyarrow==20.0.0", # fix: pin pyarrow version to 20 for rpi compatibility #15897
     "einops==0.8.2",
 
     "ftfy==6.3.1",
     "chardet==7.4.3",
-    "pypdf==6.7.5",
+    "pypdf==6.16.1",
     "docx2txt==0.9",
     "python-docx==1.2.0",
     "python-pptx==1.0.2",
@@ -137,7 +137,7 @@ mariadb = [
     "mariadb==1.1.14",
 ]
 unstructured = [
-    "unstructured==0.22.31",
+    "unstructured==0.24.0",
 ]
 
 all = [
@@ -155,7 +155,7 @@ all = [
     "colbert-ai==0.2.22",
 
     "azure-search-documents==12.0.0",
-    "unstructured==0.22.31",
+    "unstructured==0.24.0",
 ]
 
 [project.scripts]
