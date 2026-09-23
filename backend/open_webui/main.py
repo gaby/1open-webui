@@ -1660,9 +1660,13 @@ async def chat_completion(
             # content-filter, quota exceeded), generate_chat_completion
             # returns a JSONResponse instead of raising.  Detect this and
             # raise so the except-block below emits a terminal
-            # chat:message:error, unblocking the frontend.
+            # chat:message:error, unblocking the frontend.  Keep the
+            # provider's status so API callers still see e.g. a 429.
             if isinstance(response, JSONResponse) and response.status_code >= 400:
-                raise Exception(get_response_error_detail(response))
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=get_response_error_detail(response),
+                )
 
             if ctx is None:
                 ctx = await build_chat_response_context(request, form_data, user, model, metadata, tasks, events)
@@ -1716,8 +1720,14 @@ async def chat_completion(
                 # WebSocket error channel.  We must surface the error as
                 # a proper HTTP response; without this the function would
                 # return None which FastAPI serializes as null.  #23924
+                # Keep error statuses such as a provider's 429 so API
+                # clients can back off and retry.
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
+                    status_code=(
+                        e.status_code
+                        if isinstance(e, HTTPException) and e.status_code >= 400
+                        else status.HTTP_400_BAD_REQUEST
+                    ),
                     detail=error_detail,
                 )
         finally:
