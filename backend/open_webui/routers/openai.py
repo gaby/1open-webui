@@ -1974,10 +1974,11 @@ async def responses(
                     requested_model=payload.get('model'),
                     upstream_error=response_data,
                 )
+                retry_headers = get_retry_after_headers(r.headers)
                 if isinstance(response_data, (dict, list)):
-                    return JSONResponse(status_code=r.status, content=response_data)
+                    return JSONResponse(status_code=r.status, content=response_data, headers=retry_headers)
                 else:
-                    return PlainTextResponse(status_code=r.status, content=response_data)
+                    return PlainTextResponse(status_code=r.status, content=response_data, headers=retry_headers)
 
             return response_data
 
