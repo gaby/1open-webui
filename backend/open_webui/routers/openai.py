@@ -1846,10 +1846,11 @@ async def embeddings(request: Request, form_data: dict, user):
                     requested_model=requested_model,
                     upstream_error=response_data,
                 )
+                retry_headers = get_retry_after_headers(r.headers)
                 if isinstance(response_data, (dict, list)):
-                    return JSONResponse(status_code=r.status, content=response_data)
+                    return JSONResponse(status_code=r.status, content=response_data, headers=retry_headers)
                 else:
-                    return PlainTextResponse(status_code=r.status, content=response_data)
+                    return PlainTextResponse(status_code=r.status, content=response_data, headers=retry_headers)
 
             return response_data
     except Exception as e:
@@ -2097,10 +2098,11 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
                     requested_model=model_id,
                     upstream_error=response_data,
                 )
+                retry_headers = get_retry_after_headers(r.headers)
                 if isinstance(response_data, (dict, list)):
-                    return JSONResponse(status_code=r.status, content=response_data)
+                    return JSONResponse(status_code=r.status, content=response_data, headers=retry_headers)
                 else:
-                    return PlainTextResponse(status_code=r.status, content=response_data)
+                    return PlainTextResponse(status_code=r.status, content=response_data, headers=retry_headers)
 
             return response_data
 
