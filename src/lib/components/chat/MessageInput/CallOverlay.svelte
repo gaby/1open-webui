@@ -44,6 +44,7 @@
 	let mediaRecorder;
 	let audioStream = null;
 	let audioChunks = [];
+	let destroyed = false;
 
 	let videoInputDevices = [];
 	let selectedVideoInputDeviceId = null;
@@ -184,7 +185,8 @@
 	};
 
 	const stopRecordingCallback = async (_continue = true) => {
-		if ($showCallOverlay) {
+		// $showCallOverlay stays true when the chat page unmounts
+		if ($showCallOverlay && !destroyed) {
 			console.log('%c%s', 'color: red; font-size: 20px;', '🚨 stopRecordingCallback 🚨');
 
 			// deep copy the audioChunks array
@@ -231,7 +233,7 @@
 	};
 
 	const startRecording = async () => {
-		if ($showCallOverlay) {
+		if ($showCallOverlay && !destroyed) {
 			if (!audioStream) {
 				audioStream = await navigator.mediaDevices.getUserMedia({
 					audio: {
@@ -454,21 +456,17 @@
 				};
 
 				audioElement.src = audio.src;
-				audioElement.muted = true;
+				// stopAllAudio mutes it; unmuting after play() outside a gesture makes WebKit pause it
+				audioElement.muted = false;
 				audioElement.playbackRate = $settings.audio?.tts?.playbackRate ?? 1;
 				audioElement.onended = finish;
 				audioElement.onerror = () => finish();
 				audioElement.onpause = finish;
 
-				audioElement
-					.play()
-					.then(() => {
-						audioElement.muted = false;
-					})
-					.catch((error) => {
-						console.error(error);
-						finish(error);
-					});
+				audioElement.play().catch((error) => {
+					console.error(error);
+					finish(error);
+				});
 			});
 		} else {
 			return Promise.resolve();
@@ -776,6 +774,7 @@
 	});
 
 	onDestroy(async () => {
+		destroyed = true;
 		await stopAllAudio();
 		await stopRecordingCallback(false);
 		await stopCamera();

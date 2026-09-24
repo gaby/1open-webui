@@ -1195,7 +1195,6 @@ async def process_tool_result(
                                 'chat_id': metadata.get('chat_id', None),
                                 'message_id': metadata.get('message_id', None),
                                 'session_id': metadata.get('session_id', None),
-                                'result': item,
                             },
                             user,
                         )
@@ -3866,7 +3865,7 @@ async def background_tasks_handler(ctx):
 
             if isinstance(content, str):
                 content = re.sub(
-                    r'<details\b[^>]*>.*?<\/details>|!\[.*?\]\(.*?\)',
+                    r'<details\b[^<>]*>(?:(?!<details\b).)*?<\/details>|!\[[^\[\]]*\]\([^()]*\)',
                     '',
                     content,
                     flags=re.S | re.I,

@@ -72,6 +72,7 @@ from open_webui.env import (
     ENABLE_OAUTH_ID_TOKEN_COOKIE,
     OAUTH_CLIENT_INFO_ENCRYPTION_KEY,
     OAUTH_MAX_SESSIONS_PER_USER,
+    REDIS_KEY_PREFIX,
     WEBUI_AUTH_COOKIE_SAME_SITE,
     WEBUI_AUTH_COOKIE_SECURE,
 )
@@ -611,6 +612,8 @@ async def get_oauth_client_info_with_dynamic_client_registration(
                     oauth_client_info = OAuthClientInformationFull.model_validate(
                         {
                             **registration_response_json,
+                            # RFC 7591: the server may omit scope; keep the requested one.
+                            'scope': registration_response_json.get('scope') or oauth_client_metadata.scope,
                             'issuer': oauth_server_metadata_url,
                             'server_metadata': oauth_server_metadata,
                             'resource': resource,
@@ -798,10 +801,7 @@ def build_oauth_request_params(client_info: OAuthClientInformationFull | None) -
     return params
 
 
-async def recover_static_oauth_client_metadata(connection: dict, oauth_client_info: dict) -> dict:
-    if connection.get('auth_type') != 'oauth_2.1_static':
-        return oauth_client_info
-
+async def recover_oauth_client_metadata(connection: dict, oauth_client_info: dict) -> dict:
     if oauth_client_info.get('scope') and oauth_client_info.get('resource'):
         return oauth_client_info
 
@@ -812,13 +812,13 @@ async def recover_static_oauth_client_metadata(connection: dict, oauth_client_in
     try:
         resource_metadata = await get_protected_resource_metadata(server_url)
     except Exception as e:
-        log.debug('Unable to recover static OAuth metadata for %s: %s', server_url, e)
+        log.debug('Unable to recover OAuth metadata for %s: %s', server_url, e)
         return oauth_client_info
 
     recovered = {**oauth_client_info}
     if not recovered.get('scope') and resource_metadata.scopes_supported:
         recovered['scope'] = ' '.join(resource_metadata.scopes_supported)
-        log.info('Recovered static OAuth scopes for %s from protected resource metadata', server_url)
+        log.info('Recovered OAuth scopes for %s from protected resource metadata', server_url)
 
     if not recovered.get('resource') and resource_metadata.resource:
         recovered['resource'] = resource_metadata.resource
@@ -915,7 +915,7 @@ class OAuthClientManager:
 
             try:
                 oauth_client_info = resolve_oauth_client_info(connection)
-                oauth_client_info = await recover_static_oauth_client_metadata(connection, oauth_client_info)
+                oauth_client_info = await recover_oauth_client_metadata(connection, oauth_client_info)
                 oauth_client_info = apply_connection_oauth_options(connection, oauth_client_info)
                 return self.add_client(expected_client_id, OAuthClientInformationFull(**oauth_client_info))['client']
             except InvalidToken:
@@ -1429,7 +1429,14 @@ class OAuthManager:
         Returns:
             dict: Refreshed token data, or None if refresh failed
         """
-        async with self._refresh_locks.setdefault(session.id, asyncio.Lock()):
+        redis = self.app.state.redis
+        if redis:
+            # Shared across workers and replicas
+            refresh_lock = redis.lock(f'{REDIS_KEY_PREFIX}:oauth:refresh_lock:{session.id}', timeout=60)
+        else:
+            refresh_lock = self._refresh_locks.setdefault(session.id, asyncio.Lock())
+
+        async with refresh_lock:
             # Another request may have refreshed while we waited; its refresh token is now spent
             current_session = await OAuthSessions.get_session_by_id(session.id)
             if current_session and current_session.token != session.token:

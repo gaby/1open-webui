@@ -968,6 +968,8 @@
 	};
 
 	const resetInput = async () => {
+		// Let the $: update finish first, or webSearchActive misses the default-feature writes
+		await tick();
 		selectedToolIds = [];
 		selectedSkillIds = [];
 		selectedFilterIds = [];
@@ -1020,6 +1022,41 @@
 				skills.set(await getSkills(localStorage.token));
 			}
 			if (selectedModels.length !== 1 && !atSelectedModel) {
+				const comparedModels = selectedModels
+					.filter((id) => id)
+					.map((id) => $models.find((m) => m.id === id));
+				const isSharedDefaultFeature = (feature) =>
+					comparedModels.length > 0 &&
+					comparedModels.every(
+						(model) =>
+							model?.info?.meta?.capabilities?.[feature] &&
+							model?.info?.meta?.defaultFeatureIds?.includes(feature)
+					);
+
+				if (
+					isSharedDefaultFeature('image_generation') &&
+					$config?.features?.enable_image_generation &&
+					($user?.role === 'admin' || $user?.permissions?.features?.image_generation)
+				) {
+					imageGenerationEnabled = true;
+				}
+
+				if (
+					isSharedDefaultFeature('web_search') &&
+					$config?.features?.enable_web_search &&
+					($user?.role === 'admin' || $user?.permissions?.features?.web_search)
+				) {
+					webSearchEnabled = true;
+				}
+
+				if (
+					isSharedDefaultFeature('code_interpreter') &&
+					$config?.features?.enable_code_interpreter &&
+					($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
+				) {
+					codeInterpreterEnabled = true;
+				}
+
 				return;
 			}
 
@@ -2529,22 +2566,34 @@
 	};
 
 	const sendQueuedMessageNow = async (id) => {
+		if (processingQueueChats.has($chatId)) return;
+
 		const queue = $chatRequestQueues[$chatId] ?? [];
 		const item = queue.find((m) => m.id === id);
 		if (!item || (item.files ?? []).some((file) => ['uploading', 'error'].includes(file.status))) {
 			return;
 		}
 
-		chatRequestQueues.update((q) => ({
-			...q,
-			[$chatId]: queue.filter((m) => m.id !== id)
-		}));
-		await stopResponse(false);
-		await tick();
-		await submitPrompt(item.prompt, item.files);
+		const targetChatId = $chatId;
+		processingQueueChats.add(targetChatId);
+		try {
+			chatRequestQueues.update((q) => ({
+				...q,
+				[targetChatId]: queue.filter((m) => m.id !== id)
+			}));
+			await stopResponse(false);
+			await tick();
+			await submitPrompt(item.prompt, item.files);
+		} finally {
+			processingQueueChats.delete(targetChatId);
+			// Completion can arrive before submitPrompt returns, while the queue is locked.
+			if ($chatId === targetChatId) {
+				await processNextInQueue(targetChatId);
+			}
+		}
 	};
 
-	const editQueuedMessage = (id) => {
+	const editQueuedMessage = async (id) => {
 		const queue = $chatRequestQueues[$chatId] ?? [];
 		const item = queue.find((m) => m.id === id);
 		if (!item) return;
@@ -2555,14 +2604,18 @@
 		}));
 		files = item.files;
 		messageInput?.setText(item.prompt);
+
+		await processNextInQueue($chatId);
 	};
 
-	const deleteQueuedMessage = (id) => {
+	const deleteQueuedMessage = async (id) => {
 		const queue = $chatRequestQueues[$chatId] ?? [];
 		chatRequestQueues.update((q) => ({
 			...q,
 			[$chatId]: queue.filter((m) => m.id !== id)
 		}));
+
+		await processNextInQueue($chatId);
 	};
 
 	const chatCompletedHandler = async (_chatId, modelId, responseMessageId, messages) => {
@@ -3787,7 +3840,7 @@
 			}
 
 			if (responseMessage) {
-				history.messages[history.currentId] = responseMessage;
+				history.messages[responseMessage.id] = responseMessage;
 			}
 
 			if (shouldAutoScrollResponse()) {
