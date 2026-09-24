@@ -247,7 +247,7 @@ from open_webui.utils.middleware import (
     process_chat_payload,
     process_chat_response,
 )
-from open_webui.utils.misc import get_response_error_detail, merge_model_params
+from open_webui.utils.misc import get_response_error_detail, get_retry_after_headers, merge_model_params
 from open_webui.utils.model_ids import strip_provider_model_prefix
 from open_webui.utils.models import (
     check_model_access,
@@ -1658,9 +1658,15 @@ async def chat_completion(
             # content-filter, quota exceeded), generate_chat_completion
             # returns a JSONResponse instead of raising.  Detect this and
             # raise so the except-block below emits a terminal
-            # chat:message:error, unblocking the frontend.
+            # chat:message:error, unblocking the frontend.  Keep the
+            # provider's status and Retry-After so API callers still see
+            # e.g. a 429 and know when to retry.
             if isinstance(response, JSONResponse) and response.status_code >= 400:
-                raise Exception(get_response_error_detail(response))
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=get_response_error_detail(response),
+                    headers=get_retry_after_headers(response.headers),
+                )
 
             if ctx is None:
                 ctx = await build_chat_response_context(request, form_data, user, model, metadata, tasks, events)
@@ -1714,6 +1720,10 @@ async def chat_completion(
                 # WebSocket error channel.  We must surface the error as
                 # a proper HTTP response; without this the function would
                 # return None which FastAPI serializes as null.  #23924
+                # Keep error statuses such as a provider's 429, and its
+                # Retry-After, so API clients can back off and retry.
+                if isinstance(e, HTTPException) and e.status_code >= 400:
+                    raise
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=error_detail,
@@ -1982,9 +1992,10 @@ async def passthrough_anthropic_messages(request: Request, form_data: dict, user
                 requested_model=requested_model,
                 upstream_error=response_data,
             )
+            retry_headers = get_retry_after_headers(response.headers)
             if isinstance(response_data, (dict, list)):
-                return JSONResponse(status_code=response.status, content=response_data)
-            return Response(status_code=response.status, content=response_data)
+                return JSONResponse(status_code=response.status, content=response_data, headers=retry_headers)
+            return Response(status_code=response.status, content=response_data, headers=retry_headers)
 
         return response_data
     except HTTPException:
