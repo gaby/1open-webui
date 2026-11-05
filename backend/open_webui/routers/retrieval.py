@@ -124,6 +124,7 @@ from open_webui.storage.provider import Storage
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.files import has_access_to_file
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.headers import get_client_ip
 from open_webui.utils.misc import (
     calculate_sha256_string,
     sanitize_text_for_db,
@@ -1765,6 +1766,7 @@ async def index_file(
                         'file_id': file.id,
                         'file_name': file.filename,
                         'file_content_type': file.meta.get('content_type'),
+                        'user_ip': get_client_ip(request),
                     }
                     docs = await loader.aload(file.filename, file.meta.get('content_type'), file_path)
 

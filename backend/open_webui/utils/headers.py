@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from string import punctuation
 from typing import Any, Optional
@@ -114,27 +115,11 @@ def get_client_ip(request: Any) -> str:
 
     Uvicorn already rewrites `request.client` from X-Forwarded-For when the direct peer is listed in
     FORWARDED_ALLOW_IPS, so this follows the same trusted-proxy rules as the rest of the server.
-    Requests the server builds itself for headless runs (automations, timers, sub-agents) carry no
-    client, so they report none instead of a made-up address.
+    Requests the server builds itself for runs nobody is connected to (automations, timers, the startup
+    prefetches) carry no client, so they report none instead of a made-up address.
     """
-    client = getattr(request, 'client', None)
-    return (getattr(client, 'host', '') or '') if client else ''
-
-
-def get_x_forwarded_for(request: Any) -> str:
-    """
-    X-Forwarded-For header of `request` as received (repeated header lines count as one, like uvicorn),
-    or the client address when the request carries none, so it is also set without a reverse proxy.
-
-    Unlike `get_client_ip`, which follows the FORWARDED_ALLOW_IPS trust rules, this is whatever the sender
-    wrote: uvicorn does not say whether it trusted the peer, so the chain cannot be checked or repaired here.
-    Use it where a proxy you control sets the header, and `get_client_ip` where the value must be vouched for.
-    """
-    try:
-        values = request.headers.getlist('x-forwarded-for')
-    except Exception:
-        values = []
-    return ', '.join(value.strip() for value in values if value.strip()) or get_client_ip(request)
+    host = getattr(getattr(request, 'client', None), 'host', None)
+    return str(host) if host else ''
 
 
 async def get_custom_headers(custom_headers: dict, user=None, metadata: dict = None, request=None) -> dict:
@@ -160,12 +145,9 @@ def parse_custom_headers(
     if not user_agent:
         user_agent = metadata.get('user_agent', '') or ''
 
-    # Source address of the end user, resolved like the UA above. Without a user (e.g. the startup
-    # model prefetch) no one is behind the call, so there is nothing to attribute.
-    user_ip = x_forwarded_for = ''
-    if user:
-        user_ip = get_client_ip(request) or metadata.get('user_ip', '') or ''
-        x_forwarded_for = get_x_forwarded_for(request) or metadata.get('x_forwarded_for', '') or ''
+    # Address of the end user, resolved like the UA above. Without a user (e.g. the startup model
+    # prefetch) no one is behind the call, so there is nothing to attribute.
+    user_ip = str(get_client_ip(request) or metadata.get('user_ip') or '') if user else ''
 
     # Extract user_message info for tree mapping
     user_message = metadata.get('user_message') or {}
@@ -190,17 +172,19 @@ def parse_custom_headers(
         '{{USER_GROUP_IDS}}': ','.join(group.id for group in user_groups) if user_groups else '',
         '{{USER_AGENT}}': user_agent,
         '{{AUTH_TYPE}}': getattr(getattr(request, 'state', None), 'auth_type', None) or '',
-        # Client-controlled values go last so their text cannot expand any of the tokens above.
         '{{USER_IP}}': user_ip,
-        '{{X_FORWARDED_FOR}}': x_forwarded_for,
+        # The same vouched address, spelled for an X-Forwarded-For header. The incoming header is not
+        # relayed: uvicorn does not say whether it trusted the sender, so any client could choose it.
+        '{{X_FORWARDED_FOR}}': user_ip,
     }
+    token_pattern = re.compile('|'.join(re.escape(token) for token in template_vars))
 
     parsed_headers = {}
     for key, value in custom_headers.items():
         if not isinstance(value, str):
             value = str(value)
-        for token, val in template_vars.items():
-            value = value.replace(token, val)
+        # One pass, so substituted text (a User-Agent, display name or file name) is never scanned for tokens again.
+        value = token_pattern.sub(lambda match: template_vars[match.group(0)], value)
         # Encode Unicode and controls after substitution; preserve ASCII header syntax and existing escapes.
         parsed_headers[key] = quote(value, safe=punctuation + ' \t')
 
