@@ -249,7 +249,7 @@ from open_webui.utils.chat_variables import (
     normalize_chat_variables,
 )
 from open_webui.utils.embeddings import generate_embeddings
-from open_webui.utils.headers import get_headers_and_cookies
+from open_webui.utils.headers import get_client_ip, get_headers_and_cookies, get_x_forwarded_for
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.json_response import apply_orjson_http_json
 from open_webui.utils.logger import start_logger
@@ -1290,6 +1290,8 @@ async def chat_completion(
             else None,
             'user_id': user.id,
             'user_agent': request.headers.get('user-agent', '') or '',
+            'user_ip': get_client_ip(request),
+            'x_forwarded_for': get_x_forwarded_for(request),
             'internal': getattr(request.state, 'internal', False) is True,
             'chat_id': chat_id,
             'user_message': user_message,

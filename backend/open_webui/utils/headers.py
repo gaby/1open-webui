@@ -108,6 +108,45 @@ async def get_user_groups_for_custom_headers(
         return None
 
 
+def get_client_ip(request: Any) -> str:
+    """
+    Address of the client behind `request`, or '' when it has none.
+
+    Uvicorn already rewrites `request.client` from X-Forwarded-For when the direct peer is listed in
+    FORWARDED_ALLOW_IPS, so this follows the same trusted-proxy rules as the rest of the server.
+    Requests the server builds itself for headless runs (automations, timers, sub-agents) carry no
+    client, so they report none instead of a made-up address.
+    """
+    client = getattr(request, 'client', None)
+    return (getattr(client, 'host', '') or '') if client else ''
+
+
+def _forwarded_host(entry: str) -> str:
+    """Host part of an X-Forwarded-For entry; some proxies (e.g. Azure Application Gateway) add a port."""
+    if entry.startswith('['):  # [2001:db8::1]:4711
+        return entry[1:].partition(']')[0]
+    host, colon, port = entry.partition(':')
+    return host if colon and ':' not in port else entry  # one colon is host:port, more is a bare IPv6
+
+
+def get_x_forwarded_for(request: Any) -> str:
+    """
+    X-Forwarded-For chain to hand to an upstream: the chain of `request` as received (repeated header
+    lines count as one, like uvicorn) plus the client address if the chain does not contain it yet.
+    A proxy such as nginx does the same, so the chain always names the address `get_client_ip` reports,
+    including when Open WebUI is not behind a reverse proxy or the peer is not trusted to set the header.
+    """
+    try:
+        values = request.headers.getlist('x-forwarded-for')
+    except Exception:
+        values = []
+    chain = [entry.strip() for value in values for entry in value.split(',') if entry.strip()]
+    client_ip = get_client_ip(request)
+    if client_ip and client_ip not in {_forwarded_host(entry) for entry in chain}:
+        chain.append(client_ip)
+    return ', '.join(chain)
+
+
 async def get_custom_headers(custom_headers: dict, user=None, metadata: dict = None, request=None) -> dict:
     user_groups = await get_user_groups_for_custom_headers(custom_headers, user)
     return parse_custom_headers(custom_headers, user, metadata, request=request, user_groups=user_groups)
@@ -130,6 +169,13 @@ def parse_custom_headers(
             user_agent = ''
     if not user_agent:
         user_agent = metadata.get('user_agent', '') or ''
+
+    # Source address of the end user, resolved like the UA above. Without a user (e.g. the startup
+    # model prefetch) no one is behind the call, so there is nothing to attribute.
+    user_ip = x_forwarded_for = ''
+    if user:
+        user_ip = get_client_ip(request) or metadata.get('user_ip', '') or ''
+        x_forwarded_for = get_x_forwarded_for(request) or metadata.get('x_forwarded_for', '') or ''
 
     # Extract user_message info for tree mapping
     user_message = metadata.get('user_message') or {}
@@ -154,6 +200,9 @@ def parse_custom_headers(
         '{{USER_GROUP_IDS}}': ','.join(group.id for group in user_groups) if user_groups else '',
         '{{USER_AGENT}}': user_agent,
         '{{AUTH_TYPE}}': getattr(getattr(request, 'state', None), 'auth_type', None) or '',
+        # Client-controlled values go last so their text cannot expand any of the tokens above.
+        '{{USER_IP}}': user_ip,
+        '{{X_FORWARDED_FOR}}': x_forwarded_for,
     }
 
     parsed_headers = {}

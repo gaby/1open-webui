@@ -70,7 +70,8 @@ async def _build_request(source: Request, user_id: str, *, internal: bool) -> Re
         'path': '/api/v1/subagents/internal',
         'query_string': b'',
         'headers': Headers({}).raw,
-        'client': ('127.0.0.1', 0),
+        # No 'client': nobody is connected to a sub-agent run, and a made-up address would be
+        # forwarded to providers as the user's IP (see get_client_ip).
         'server': ('127.0.0.1', 80),
         'scheme': 'http',
         'app': source.app,
