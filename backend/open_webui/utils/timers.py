@@ -414,7 +414,8 @@ async def execute_due_timer(app, timer_id: str, claim_id: str | None = None) -> 
                 'path': '/api/v1/timers/internal',
                 'query_string': b'',
                 'headers': Headers({}).raw,
-                'client': ('127.0.0.1', 0),
+                # No 'client': nobody is connected to a timer run, and a made-up address would be
+                # forwarded to providers as the user's IP (see get_client_ip).
                 'server': ('127.0.0.1', 80),
                 'scheme': 'http',
                 'app': app,

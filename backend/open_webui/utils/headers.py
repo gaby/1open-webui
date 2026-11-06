@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from string import punctuation
 from typing import Any, Optional
@@ -108,6 +109,19 @@ async def get_user_groups_for_custom_headers(
         return None
 
 
+def get_client_ip(request: Any) -> str:
+    """
+    Address of the client behind `request`, or '' when it has none.
+
+    Uvicorn already rewrites `request.client` from X-Forwarded-For when the direct peer is listed in
+    FORWARDED_ALLOW_IPS, so this follows the same trusted-proxy rules as the rest of the server.
+    Requests the server builds itself for runs nobody is connected to (automations, timers, the startup
+    prefetches) carry no client, so they report none instead of a made-up address.
+    """
+    host = getattr(getattr(request, 'client', None), 'host', None)
+    return str(host) if host else ''
+
+
 async def get_custom_headers(custom_headers: dict, user=None, metadata: dict = None, request=None) -> dict:
     user_groups = await get_user_groups_for_custom_headers(custom_headers, user)
     return parse_custom_headers(custom_headers, user, metadata, request=request, user_groups=user_groups)
@@ -130,6 +144,10 @@ def parse_custom_headers(
             user_agent = ''
     if not user_agent:
         user_agent = metadata.get('user_agent', '') or ''
+
+    # Address of the end user, resolved like the UA above. Without a user (e.g. the startup model
+    # prefetch) no one is behind the call, so there is nothing to attribute.
+    user_ip = str(get_client_ip(request) or metadata.get('user_ip') or '') if user else ''
 
     # Extract user_message info for tree mapping
     user_message = metadata.get('user_message') or {}
@@ -154,14 +172,19 @@ def parse_custom_headers(
         '{{USER_GROUP_IDS}}': ','.join(group.id for group in user_groups) if user_groups else '',
         '{{USER_AGENT}}': user_agent,
         '{{AUTH_TYPE}}': getattr(getattr(request, 'state', None), 'auth_type', None) or '',
+        '{{USER_IP}}': user_ip,
+        # The same vouched address, spelled for an X-Forwarded-For header. The incoming header is not
+        # relayed: uvicorn does not say whether it trusted the sender, so any client could choose it.
+        '{{X_FORWARDED_FOR}}': user_ip,
     }
+    token_pattern = re.compile('|'.join(re.escape(token) for token in template_vars))
 
     parsed_headers = {}
     for key, value in custom_headers.items():
         if not isinstance(value, str):
             value = str(value)
-        for token, val in template_vars.items():
-            value = value.replace(token, val)
+        # One pass, so substituted text (a User-Agent, display name or file name) is never scanned for tokens again.
+        value = token_pattern.sub(lambda match: template_vars[match.group(0)], value)
         # Encode Unicode and controls after substitution; preserve ASCII header syntax and existing escapes.
         parsed_headers[key] = quote(value, safe=punctuation + ' \t')
 

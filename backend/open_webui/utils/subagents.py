@@ -70,7 +70,8 @@ async def _build_request(source: Request, user_id: str, *, internal: bool) -> Re
         'path': '/api/v1/subagents/internal',
         'query_string': b'',
         'headers': Headers({}).raw,
-        'client': ('127.0.0.1', 0),
+        # The sub-agent acts for the same user, from the same address, as the chat that spawned it.
+        'client': source.scope.get('client'),
         'server': ('127.0.0.1', 80),
         'scheme': 'http',
         'app': source.app,

@@ -185,7 +185,7 @@ async def build_tool_server_headers(
     # Interpolate template vars in custom connection headers
     connection_headers = connection.get('headers', None)
     if connection_headers and isinstance(connection_headers, dict):
-        for key, value in (await get_custom_headers(connection_headers, user, metadata)).items():
+        for key, value in (await get_custom_headers(connection_headers, user, metadata, request=request)).items():
             headers['Authorization' if key.lower() == 'authorization' else key] = value
 
     # Add user info headers if enabled

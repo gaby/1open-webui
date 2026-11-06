@@ -149,7 +149,8 @@ def _build_request(
         'path': '/api/v1/automations/internal',
         'query_string': b'',
         'headers': Headers({}).raw,
-        'client': ('127.0.0.1', 0),
+        # No 'client': nobody is connected to a scheduled run, and a made-up address would be
+        # forwarded to providers as the user's IP (see get_client_ip).
         'server': ('127.0.0.1', 80),
         'scheme': 'http',
         'app': app,

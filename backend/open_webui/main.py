@@ -463,7 +463,7 @@ async def lifespan(app: FastAPI):
                         'path': '/internal',
                         'query_string': b'',
                         'headers': Headers({}).raw,
-                        'client': ('127.0.0.1', 12345),
+                        # No 'client': nobody is connected to the startup prefetch (see get_client_ip).
                         'server': ('127.0.0.1', 80),
                         'scheme': 'http',
                         'app': app,
@@ -487,7 +487,7 @@ async def lifespan(app: FastAPI):
                 'path': '/internal',
                 'query_string': b'',
                 'headers': Headers({}).raw,
-                'client': ('127.0.0.1', 12345),
+                # No 'client': nobody is connected to the startup prefetch (see get_client_ip).
                 'server': ('127.0.0.1', 80),
                 'scheme': 'http',
                 'app': app,
